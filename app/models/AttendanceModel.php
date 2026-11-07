@@ -1,0 +1,71 @@
+<?php
+defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+
+class AttendanceModel extends Model
+{
+    public function snapshot(int $eventId, int $orgId): void
+    {
+        require_once __DIR__ . '/OrgEventModel.php';
+        $org = (new OrgEventModel())->organization($orgId);
+        $params = [
+            $eventId
+        ];
+        $where = "account_status='ACTIVE' AND activation_status='ACTIVATED'";
+        if ($org['allowed_courses'] !== null) {
+            $where .= ' AND UPPER(TRIM(course)) IN (' . implode(',', array_fill(0, count($org['allowed_courses']), '?')) . ')';
+            array_push($params,...$org['allowed_courses']);
+        }
+        $this->db->raw('INSERT IGNORE INTO org_event_roster (event_id,student_id) SELECT ?,id FROM students WHERE ' . $where, $params);
+    }
+
+    public function finalize(?int $orgId = null): int
+    {
+        $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+        $query = $this->db->table('org_events')
+            ->select('id,org_user_id')
+            ->where('event_type', 'ATTENDANCE')
+            ->where('absence_enabled', 1)
+            ->where_null('attendance_finalized_at')
+            ->where('scan_ends_at', '<', $now);
+        if ($orgId !== null) {
+            $query->where('org_user_id', $orgId);
+        }
+        $events = $query->get_all();
+        $total = 0;
+        foreach ($events as $item) {
+            $this->db->transaction();
+            try {
+                // Same organization/event lock order as scan confirmation prevents races.
+                $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [
+                    $item['org_user_id']
+                ]);
+                $event = $this->db->raw('SELECT * FROM org_events WHERE id=? FOR UPDATE', [
+                    $item['id']
+                ])->fetch(PDO::FETCH_ASSOC);
+                if (!$event || $event['attendance_finalized_at'] !== null || $event['scan_ends_at'] >= $now) {
+                    $this->db->commit();
+                    continue;
+                }
+                $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status)
+                SELECT r.event_id,r.student_id,?,'ATTENDANCE',0.00,?,'ABSENT' FROM org_event_roster r
+                LEFT JOIN org_scan_records s ON s.event_id=r.event_id AND s.student_id=r.student_id
+                WHERE r.event_id=? AND s.id IS NULL", [
+                    $event['org_user_id'],
+                    $event['scan_ends_at'],
+                    $event['id']
+                ]);
+                $total += $insert->rowCount();
+                $this->db->table('org_events')
+                    ->where('id', '=', $event['id'])
+                    ->update([
+                        'attendance_finalized_at' => $now
+                    ]);
+                $this->db->commit();
+            } catch (Throwable $e) {
+                $this->db->roll_back();
+                throw $e;
+            }
+        }
+        return $total;
+    }
+}

@@ -41,4 +41,14 @@ defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 | Used for adding middlewares
 |
 */
-$config['middlewares'] = [];
+// Load our single authentication and authorization middleware class.
+$authMiddleware = load_class('AuthMiddleware', 'middlewares');
+
+// Route aliases: both use the same AuthMiddleware class.
+$config['middlewares'] = [
+    // Requires a logged-in session.
+    'auth' => $authMiddleware,
+
+    // Requires a logged-in session AND the ADMIN role.
+    'admin' => new AuthMiddleware(['ADMIN']),
+];

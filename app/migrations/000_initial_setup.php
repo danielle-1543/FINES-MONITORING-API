@@ -1,7 +1,7 @@
 <?php
 
-class Initial_setup {
-
+class Initial_setup
+{
     private $_lava;
 
     public function __construct()
@@ -15,28 +15,23 @@ class Initial_setup {
         if ($this->_lava->dbforge->table_exists('migrations')) {
             return;
         }
-
-        $this->_lava->dbforge
-            ->add_field([
-                'id' => [
-                    'type'           => 'INT',
-                    'unsigned'       => TRUE,
-                    'auto_increment' => TRUE,
-                    'null'           => FALSE,
-                ],
-                'migration' => [
-                    'type'     => 'INT',
-                    'null'     => FALSE,
-                ],
-                'applied_at' => [
-                    'type'    => 'DATETIME',
-                    'null'    => FALSE,
-                    'default' => 'CURRENT_TIMESTAMP',
-                ],
-            ])
-            ->add_key('id', primary: TRUE)
-            ->add_key('migration', unique: TRUE, name: 'migration_unique')
-            ->create_table('migrations');
+        $this->_lava->dbforge->add_field([
+            'id' => [
+                'type' => 'INT',
+                'unsigned' => TRUE,
+                'auto_increment' => TRUE,
+                'null' => FALSE,
+            ],
+            'migration' => [
+                'type' => 'INT',
+                'null' => FALSE,
+            ],
+            'applied_at' => [
+                'type' => 'DATETIME',
+                'null' => FALSE,
+                'default' => 'CURRENT_TIMESTAMP',
+            ],
+        ])->add_key('id', primary: TRUE)->add_key('migration', unique: TRUE, name: 'migration_unique')->create_table('migrations');
     }
 
     public function down()

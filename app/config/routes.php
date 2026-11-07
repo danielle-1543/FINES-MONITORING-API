@@ -1,47 +1,67 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
-/**
- * ------------------------------------------------------------------
- * LavaLust - an opensource lightweight PHP MVC Framework
- * ------------------------------------------------------------------
- *
- * MIT License
- *
- * Copyright (c) 2020 Ronald M. Marasigan
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- *
- * @package LavaLust
- * @author Ronald M. Marasigan <ronald.marasigan@yahoo.com>
- * @since Version 1
- * @link https://github.com/ronmarasigan/LavaLust
- * @license https://opensource.org/licenses/MIT MIT License
- */
-
-/*
-| -------------------------------------------------------------------
-| URI ROUTING
-| -------------------------------------------------------------------
-| Here is where you can register web routes for your application.
-|
-|
-*/
-/** @var object $router **/
-
-$router->get('/', 'Welcome::index');
+/** @var object $router */
+// Backend status: opening the root now returns JSON.
+$router->get('/', 'AuthController::index');
+// Public login endpoint: successful login returns JWT tokens.
+$router->post('/api/auth/login', 'AuthController::login');
+$router->post('/api/auth/logout', 'AuthController::logout');
+$router->post('/api/auth/refresh', 'AuthController::refresh');
+$router->get('/api/account', 'AccountSettingsController::account');
+$router->post('/api/account/update', 'AccountSettingsController::update');
+$router->post('/api/account/password', 'AccountSettingsController::password');
+$router->get('/api/student/payments', 'PaymentController::overview');
+$router->post('/api/student/payments/submit', 'PaymentController::submit');
+$router->post('/api/student/payments/cancel', 'PaymentController::cancel');
+$router->get('/api/payments/receipt', 'PaymentController::receipt');
+$router->get('/api/payments/proof', 'PaymentController::proof');
+$router->get('/api/org/payments', 'PaymentController::claims');
+$router->get('/api/org/fines', 'PaymentController::fines');
+$router->get('/api/org/fines/export', 'PaymentController::fines_export');
+$router->post('/api/org/payments/review', 'PaymentController::review');
+$router->post('/api/student/activation/preview', 'StudentAccountController::preview');
+$router->post('/api/student/activation/identify', 'StudentAccountController::identify');
+$router->post('/api/student/activation/complete', 'StudentAccountController::activate');
+$router->get('/api/student/profile', 'StudentAccountController::profile');
+$router->get('/api/student/dashboard', 'StudentAccountController::dashboard');
+$router->get('/api/student/account', 'StudentAccountController::account');
+$router->post('/api/student/account/update', 'StudentAccountController::update_account');
+$router->post('/api/student/account/password', 'StudentAccountController::change_password');
+$router->get('/api/student/qr', 'StudentAccountController::qr');
+$router->get('/api/student/history', 'StudentAccountController::history');
+$router->get('/api/student/history/export', 'StudentAccountController::export_history');
+// Admin dashboard: activated and pending student account counts.
+$router->get('/api/admin/dashboard', 'AdminDashboardController::overview');
+$router->get('/api/admin/organizations', 'AdminOrganizationController::index');
+$router->get('/api/admin/organizations/export', 'AdminOrganizationController::export');
+$router->post('/api/admin/organizations/create', 'AdminOrganizationController::create');
+$router->post('/api/admin/organizations/update', 'AdminOrganizationController::update');
+$router->get('/api/admin/dashboard/account-stats', 'AdminDashboardController::account_stats');
+// Admin student management.
+$router->get('/api/admin/students', 'StudentController::index');
+$router->get('/api/admin/students/summary', 'StudentController::summary');
+$router->get('/api/admin/students/filter-options', 'StudentController::filter_options');
+$router->post('/api/admin/students/create', 'StudentController::create');
+$router->post('/api/admin/students/update', 'StudentController::update');
+$router->post('/api/admin/students/delete', 'StudentController::delete');
+$router->post('/api/admin/students/account-status', 'StudentController::account_status');
+$router->post('/api/admin/students/reset-code', 'StudentController::reset_code');
+$router->post('/api/admin/students/reveal-code', 'StudentController::reveal_code');
+$router->post('/api/admin/students/qr-status', 'StudentController::qr_status');
+$router->post('/api/admin/students/qr-details', 'StudentController::qr_details');
+$router->post('/api/admin/students/bulk-import', 'StudentController::bulk_import');
+$router->post('/api/admin/students/export-qr-batch', 'StudentController::export_qr_batch');
+// Organization-owned events, violation types and confirmed QR records.
+$router->get('/api/org/events', 'OrganizationController::events');
+$router->get('/api/org/dashboard', 'OrganizationController::dashboard');
+$router->post('/api/org/violation-types/create', 'OrganizationController::create_type');
+$router->post('/api/org/events/create', 'OrganizationController::create_event');
+$router->post('/api/org/events/edit', 'OrganizationController::edit_event');
+$router->get('/api/org/records', 'OrganizationController::records');
+$router->get('/api/org/records/export', 'OrganizationController::export_records');
+$router->get('/api/org/students', 'OrganizationController::students');
+$router->get('/api/org/students/export', 'OrganizationController::export_students');
+$router->post('/api/org/violations/preview', 'OrganizationController::violation_preview');
+$router->post('/api/org/violations/record', 'OrganizationController::violation_record');
+$router->post('/api/org/scanner/preview', 'OrganizationController::scan_preview');
+$router->post('/api/org/scanner/record', 'OrganizationController::scan_record');
