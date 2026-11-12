@@ -157,7 +157,6 @@ class OrganizationController extends Controller
             $students = $this->OrgEventModel->export_students($id, $_GET)->fetchAll(PDO::FETCH_ASSOC);
             $balances = $this->call->model('PaymentModel')->organization_fines($id, [], true);
             $balancesByStudent = array_column($balances['data'], null, 'student_id');
-            $absencesByStudent = $this->OrgEventModel->absence_counts($id);
             $rows = [];
             $totalCents = 0;
             $outstandingCents = 0;
@@ -167,11 +166,19 @@ class OrganizationController extends Controller
                 $balance = $balancesByStudent[$student['id']] ?? [];
                 $fineCents = (int) round((float) ($balance['total_fine'] ?? 0) * 100);
                 $remainingCents = (int) round((float) ($balance['outstanding'] ?? 0) * 100);
-                $violations = (int) ($balance['violation_count'] ?? 0);
-                $absences = (int) ($absencesByStudent[$student['id']] ?? 0);
+                $violations = 0;
+                $absences = 0;
+                foreach ($balance['fines'] ?? [] as $fine) {
+                    $amountCents = (int) round((float) $fine['fine_amount'] * 100);
+                    if ($fine['record_type'] === 'VIOLATION') {
+                        $violations += $amountCents;
+                    } elseif ($fine['record_type'] === 'ATTENDANCE') {
+                        $absences += $amountCents;
+                    }
+                }
                 $rows[] = $student + [
-                    'total_violations' => $violations,
-                    'total_absences' => $absences,
+                    'violation_fines' => $violations / 100,
+                    'absence_fines' => $absences / 100,
                     'fine_amount' => $fineCents / 100,
                     'outstanding' => $remainingCents / 100
                 ];
@@ -182,8 +189,8 @@ class OrganizationController extends Controller
             }
             return ['data' => $rows, 'totals' => [
                 'full_name' => 'GRAND TOTAL',
-                'total_violations' => $totalViolations,
-                'total_absences' => $totalAbsences,
+                'violation_fines' => $totalViolations / 100,
+                'absence_fines' => $totalAbsences / 100,
                 'fine_amount' => $totalCents / 100,
                 'outstanding' => $outstandingCents / 100
             ], 'columns' => [
@@ -192,8 +199,8 @@ class OrganizationController extends Controller
                 'section' => 'Section',
                 'full_name' => 'Full Name',
                 'student_number' => 'Student Number',
-                'total_violations' => 'Total Violations',
-                'total_absences' => 'Total Absences',
+                'violation_fines' => 'Violation Fines (PHP)',
+                'absence_fines' => 'Absence Fines (PHP)',
                 'fine_amount' => 'Total Fines (PHP)',
                 'outstanding' => 'Remaining to Pay (PHP)',
             ]];
