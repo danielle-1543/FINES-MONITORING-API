@@ -5,8 +5,7 @@ class AttendanceModel extends Model
 {
     public function snapshot(int $eventId, int $orgId): void
     {
-        require_once __DIR__ . '/OrgEventModel.php';
-        $org = (new OrgEventModel())->organization($orgId);
+        $org = $this->call->model('OrgEventModel')->organization($orgId);
         $params = [
             $eventId
         ];
@@ -15,6 +14,7 @@ class AttendanceModel extends Model
             $where .= ' AND UPPER(TRIM(course)) IN (' . implode(',', array_fill(0, count($org['allowed_courses']), '?')) . ')';
             array_push($params,...$org['allowed_courses']);
         }
+        // INSERT ... SELECT snapshots the roster atomically; IGNORE makes retries idempotent.
         $this->db->raw('INSERT IGNORE INTO org_event_roster (event_id,student_id) SELECT ?,id FROM students WHERE ' . $where, $params);
     }
 
@@ -39,7 +39,7 @@ class AttendanceModel extends Model
                 $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [
                     $item['org_user_id']
                 ]);
-                $event = $this->db->raw('SELECT * FROM org_events WHERE id=? FOR UPDATE', [
+                $event = $this->db->raw('SELECT id, org_user_id, scan_ends_at, attendance_finalized_at, absence_fine_amount FROM org_events WHERE id=? FOR UPDATE', [
                     $item['id']
                 ])->fetch(PDO::FETCH_ASSOC);
                 if (!$event || $event['attendance_finalized_at'] !== null || $event['scan_ends_at'] >= $now) {
@@ -47,14 +47,17 @@ class AttendanceModel extends Model
                     continue;
                 }
                 $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status)
-                SELECT r.event_id,r.student_id,?,'ATTENDANCE',0.00,?,'ABSENT' FROM org_event_roster r
+                SELECT r.event_id,r.student_id,?,'ATTENDANCE',?,?,'ABSENT' FROM org_event_roster r
                 LEFT JOIN org_scan_records s ON s.event_id=r.event_id AND s.student_id=r.student_id
                 WHERE r.event_id=? AND s.id IS NULL", [
                     $event['org_user_id'],
+                    $event['absence_fine_amount'],
                     $event['scan_ends_at'],
                     $event['id']
                 ]);
                 $total += $insert->rowCount();
+                $this->call->model('NotificationModel')
+                    ->record_absences((int) $event['id']);
                 $this->db->table('org_events')
                     ->where('id', '=', $event['id'])
                     ->update([

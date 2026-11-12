@@ -12,10 +12,9 @@ PHP 8+ and the existing MySQL database configured in `.env`.
 - `app/config/migration.php`: migration settings only.
 - `app/libraries/FinesMigrationRunner.php`: migration execution and completion tracking.
 - `app/migrations`: numbered migration classes with `up()` and `down()` methods.
-  Files `003`–`013` contain the application's 11 custom database changes.
+  Files `003`–`017` contain the application's 15 custom database changes.
 - `console/migrate.php`: migration commands.
 - `console/cli.php`: LavaLust's CLI, used by the root `lava` command.
-- `console/finalize_attendance.php`: attendance absence worker.
 
 Application queries use LavaLust Query Builder for ordinary reads, joins,
 inserts, updates, deletes, filtering and pagination. Parameterized SQL remains
@@ -37,7 +36,7 @@ Use `--run` without `--only` to run all pending custom migrations. These steps
 extend the existing application schema; they are not a blank-database installer.
 Loading configuration does not run migrations. The custom CLI preserves the
 existing `fines_schema_migrations` history and migration keys, so previously
-completed steps remain completed. It discovers files `003`–`013` automatically.
+completed steps remain completed. It discovers files `003`–`017` automatically.
 The files also expose LavaLust's `up()`/`down()` class interface; automatic
 rollback of these data-preserving changes is intentionally unsupported.
 The original `000`–`002` files are framework examples, not a complete installer
@@ -47,14 +46,11 @@ Academic programs and default college memberships are read from database tables
 through `ProgramCatalogModel`. Organization-specific program selections remain
 in `organization_programs`. No organization config file is used.
 
-## Attendance worker
+## Attendance finalization
 
-```powershell
-php console/finalize_attendance.php --watch
-```
-
-Keep this running when ended attendance windows should be finalized without
-waiting for an API request. It checks every 15 seconds.
+Controllers call `AttendanceModel::finalize()` during API requests to process
+ended attendance windows. Absence processing waits for the next relevant request
+when the system is idle. No attendance console worker is required.
 
 ## React development server
 
@@ -64,3 +60,17 @@ npm run dev
 ```
 
 The framework's license and attribution remain in `LICENSE` and its source files.
+
+## Student updates
+
+Apply the additive migration with `php console/migrate.php --run --only=student_updates`.
+Student Management supports individual selection, selection across pages, and all students matching the current filters, up to 2,000 per batch.
+The existing `POST /api/admin/students/update` route now requires a reason-based preview followed by confirmation with its fingerprint. Course changes require Shift course. Fields left blank retain their current values. Names and numbers can be corrected only for a single student.
+
+Transfer-out and dropout reasons enable a separate deactivation action with an optional note. Deactivation updates the linked login account and revokes access/refresh tokens; reactivation requires a fresh login. A reason alone does not deactivate an account.
+
+Every confirmed action records before/after values, the administrator, note, timestamp and batch identifier in `student_change_history`. Preview requests do not write edit or activity history. Stale/replayed confirmations are rejected. Existing QR and activation credentials are preserved.
+
+These actions update current student details immediately. Academic-term enrollment, future scheduling, historical course membership, and fine discounts are separate features.
+
+Bulk selection snapshots the exact IDs matching the active filters. Apply at least one filter to use Select all matching students; individual matching records can then be deselected. Filters changing clear the selection, and the server rechecks filter membership before previewing or saving. Notes are optional for every update reason.

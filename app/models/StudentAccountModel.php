@@ -19,11 +19,13 @@ class StudentAccountModel extends Model
             throw new DomainException('The QR token or activation code is invalid.', 422);
         }
         if ($lock) {
-            $student = $this->db->raw('SELECT * FROM students WHERE qr_token = ? FOR UPDATE', [
+            // Lock the one-time activation record until account creation completes.
+            $student = $this->db->raw('SELECT id, user_id, student_number, full_name, course, year_level, section, activation_status, account_status, activated_at, qr_token_status, activation_code_hash, activation_code_expires_at FROM students WHERE qr_token = ? FOR UPDATE', [
                 $token
             ])->fetch(PDO::FETCH_ASSOC);
         } else {
             $student = $this->db->table('students')
+                ->select('id, user_id, student_number, full_name, course, year_level, section, activation_status, account_status, activated_at, qr_token_status, activation_code_hash, activation_code_expires_at')
                 ->where('qr_token', $token)
                 ->get();
         }
@@ -183,8 +185,7 @@ class StudentAccountModel extends Model
 
     public function dashboard(int $userId): array
     {
-        require_once __DIR__ . '/AttendanceModel.php';
-        (new AttendanceModel())->finalize();
+        $this->call->model('AttendanceModel')->finalize();
         $profile = $this->profile($userId);
         $student = $this->db->table('students')
             ->select('id,course')
@@ -221,14 +222,14 @@ class StudentAccountModel extends Model
             ->limit(5)
             ->get_all();
         $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $groups = [];
         foreach ($catalog['organization_course_groups'] as $group => $programs) {
             if (in_array(strtoupper(trim($student['course'])), $programs, true)) {
                 $groups[] = $group;
             }
         }
+        // Correlated EXISTS preserves explicit program assignments before college fallback.
         $groupSql = $groups ? 'UPPER(TRIM(u.organization_course)) IN (' . implode(',', array_fill(0, count($groups), '?')) . ')' : '1=0';
         $events = $this->db->raw("SELECT e.id,e.name,e.scan_starts_at,e.scan_ends_at,u.organization_name
             FROM org_events e JOIN users u ON u.id=e.org_user_id
@@ -245,8 +246,7 @@ class StudentAccountModel extends Model
             $event['event_status'] = $event['scan_starts_at'] <= $now ? 'ONGOING' : 'UPCOMING';
         }
         unset($event);
-        require_once __DIR__ . '/PaymentModel.php';
-        $payments = (new PaymentModel())->overview($userId);
+        $payments = $this->call->model('PaymentModel')->overview($userId);
         $recent = array_slice(array_values(array_filter($payments['claims'], fn ($p) => $p['status'] === 'CONFIRMED')), 0, 5);
         foreach ($recent as & $payment) {
             $payment['recorded_at'] = $payment['reviewed_at'];

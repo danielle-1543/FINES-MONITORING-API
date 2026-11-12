@@ -79,6 +79,21 @@ class PaymentController extends Controller
         ], 'STUDENT');
     }
 
+    public function periods(): void
+    {
+        $this->run('GET', fn ($id) => [
+            'data' => $this->call->model('PaymentPeriodModel')->periods($id)
+        ], 'ORGANIZATION');
+    }
+
+    public function save_period(): void
+    {
+        $this->run('POST', function ($id, $data) {
+            $this->call->model('PaymentPeriodModel')->save($id, $data);
+            return ['message' => 'Payment schedule saved.'];
+        }, 'ORGANIZATION');
+    }
+
     public function submit(): void
     {
         $this->run('POST', function ($id, $data) {
@@ -147,6 +162,21 @@ class PaymentController extends Controller
     public function fines(): void
     {
         $this->run('GET', fn ($id) => $this->PaymentModel->organization_fines($id, $_GET), 'ORGANIZATION');
+    }
+
+    public function student_record(): void
+    {
+        $this->run('GET', fn ($id) => [
+            'data' => $this->call->model('StudentVoucherModel')->record($id, $this->id($_GET['student_id'] ?? null))
+        ], 'ORGANIZATION');
+    }
+
+    public function add_voucher(): void
+    {
+        $this->run('POST', function ($id, $data) {
+            $this->call->model('StudentVoucherModel')->save($id, $this->id($data['student_id'] ?? null), $data);
+            return ['message' => 'Voucher / discount added.'];
+        }, 'ORGANIZATION');
     }
 
     public function fines_export(): void

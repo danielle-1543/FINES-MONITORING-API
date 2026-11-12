@@ -38,6 +38,12 @@ class OrganizationController extends Controller
                 }
             }
             $result = $work($orgId, $input);
+            // The record and inbox entry have committed before vendor delivery.
+            try {
+                $this->call->model('NotificationModel')->deliver_pending();
+            } catch (Throwable $e) {
+                error_log('Organization push delivery deferred: ' . get_class($e));
+            }
             $this->api->respond([
                 'success' => true
             ] + $result);
@@ -140,7 +146,7 @@ class OrganizationController extends Controller
                 'additional_violations' => 'Additional Violations',
                 'fine_amount' => 'Base Fine (PHP)',
                 'total_fine' => 'Total Fine (PHP)',
-                'recorded_at' => 'Recorded At (PHT)'
+                'recorded_at' => 'Recorded At'
             ]);
         });
     }
@@ -148,15 +154,49 @@ class OrganizationController extends Controller
     public function export_students(): void
     {
         $this->run('GET', function ($id) {
-            return $this->export_data($this->OrgEventModel->export_students($id, $_GET), [
+            $students = $this->OrgEventModel->export_students($id, $_GET)->fetchAll(PDO::FETCH_ASSOC);
+            $balances = $this->call->model('PaymentModel')->organization_fines($id, [], true);
+            $balancesByStudent = array_column($balances['data'], null, 'student_id');
+            $absencesByStudent = $this->OrgEventModel->absence_counts($id);
+            $rows = [];
+            $totalCents = 0;
+            $outstandingCents = 0;
+            $totalViolations = 0;
+            $totalAbsences = 0;
+            foreach ($students as $student) {
+                $balance = $balancesByStudent[$student['id']] ?? [];
+                $fineCents = (int) round((float) ($balance['total_fine'] ?? 0) * 100);
+                $remainingCents = (int) round((float) ($balance['outstanding'] ?? 0) * 100);
+                $violations = (int) ($balance['violation_count'] ?? 0);
+                $absences = (int) ($absencesByStudent[$student['id']] ?? 0);
+                $rows[] = $student + [
+                    'total_violations' => $violations,
+                    'total_absences' => $absences,
+                    'fine_amount' => $fineCents / 100,
+                    'outstanding' => $remainingCents / 100
+                ];
+                $totalCents += $fineCents;
+                $outstandingCents += $remainingCents;
+                $totalViolations += $violations;
+                $totalAbsences += $absences;
+            }
+            return ['data' => $rows, 'totals' => [
+                'full_name' => 'GRAND TOTAL',
+                'total_violations' => $totalViolations,
+                'total_absences' => $totalAbsences,
+                'fine_amount' => $totalCents / 100,
+                'outstanding' => $outstandingCents / 100
+            ], 'columns' => [
                 'course' => 'Course',
                 'year_level' => 'Year Level',
                 'section' => 'Section',
                 'full_name' => 'Full Name',
                 'student_number' => 'Student Number',
-                'account_status' => 'Account Status',
-                'activation_status' => 'Activation Status',
-            ]);
+                'total_violations' => 'Total Violations',
+                'total_absences' => 'Total Absences',
+                'fine_amount' => 'Total Fines (PHP)',
+                'outstanding' => 'Remaining to Pay (PHP)',
+            ]];
         });
     }
 
@@ -170,10 +210,7 @@ class OrganizationController extends Controller
     public function violation_record(): void
     {
         $this->run('POST', function ($id, $data) {
-            $this->OrgEventModel->record_violation($id, $data);
-            return [
-                'message' => 'Violations recorded.'
-            ];
+            return $this->OrgEventModel->record_violation($id, $data);
         });
     }
 
@@ -187,10 +224,7 @@ class OrganizationController extends Controller
     public function scan_record(): void
     {
         $this->run('POST', function ($id, $data) {
-            $this->OrgEventModel->record_scan($id, $data);
-            return [
-                'message' => 'Record saved successfully.'
-            ];
+            return $this->OrgEventModel->record_scan($id, $data);
         });
     }
 }

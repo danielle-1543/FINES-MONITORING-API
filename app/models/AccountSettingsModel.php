@@ -6,12 +6,12 @@ class AccountSettingsModel extends Model
     private function user(int $id, bool $lock = false): array
     {
         if ($lock) {
-            // The installed Query Builder has no FOR UPDATE operation.
-            $row = $this->db->raw("SELECT * FROM users WHERE id=? AND role IN ('ADMIN','ORGANIZATION') AND status='ACTIVE' FOR UPDATE", [
+            $row = $this->db->raw("SELECT id, username, email, role, organization_name, password_hash, auth_version, status FROM users WHERE id=? AND role IN ('ADMIN','ORGANIZATION') AND status='ACTIVE' FOR UPDATE", [
                 $id
             ])->fetch(PDO::FETCH_ASSOC);
         } else {
             $row = $this->db->table('users')
+                ->select('id, username, email, role, organization_name, password_hash, auth_version, status')
                 ->where('id', $id)
                 ->in('role', [
                     'ADMIN',
@@ -38,8 +38,7 @@ class AccountSettingsModel extends Model
         ]));
         $programs = null;
         if ($row['role'] === 'ORGANIZATION') {
-            require_once __DIR__ . '/OrgEventModel.php';
-            $programs = (new OrgEventModel())->organization($id)['allowed_courses'];
+            $programs = $this->call->model('OrgEventModel')->organization($id)['allowed_courses'];
         }
         return [
             'account' => $account,

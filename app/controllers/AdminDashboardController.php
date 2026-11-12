@@ -8,6 +8,28 @@ defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 
 class AdminDashboardController extends Controller
 {
+    public function activity_analytics(): void
+    {
+        header('Cache-Control: private, no-store');
+        $this->api->require_method('GET');
+        load_class('AuthMiddleware', 'middlewares');
+        (new AuthMiddleware(['ADMIN']))->handle(function () {
+            $auth = $this->api->require_jwt();
+            $this->api->rate_limit('admin-posthog-report:' . $auth['sub'], 30, 600);
+            try {
+                $this->api->respond([
+                    'success' => true,
+                    'data' => $this->AdminDashboardModel->activity_analytics($_GET),
+                ]);
+            } catch (DomainException $e) {
+                $this->api->respond_error($e->getMessage(), $e->getCode() ?: 422);
+            } catch (Throwable $e) {
+                error_log('Admin analytics: ' . get_class($e));
+                $this->api->respond_error('Unable to load system activity analytics.', 500);
+            }
+        });
+    }
+
     public function overview(): void
     {
         header('Cache-Control: private, no-store');

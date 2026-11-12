@@ -42,11 +42,11 @@ class StudentController extends Controller
         $d = [
             'student_number' => strtoupper(trim((string) ($v['student_number'] ?? ''))),
             'full_name' => trim((string) ($v['full_name'] ?? '')),
-            'section' => trim((string) ($v['section'] ?? '')),
+            'section' => strtoupper(trim((string) ($v['section'] ?? ''))),
             'course' => strtoupper(trim((string) ($v['course'] ?? ''))),
             'year_level' => trim((string) ($v['year_level'] ?? '')),
         ];
-        if (!preg_match('/^MCC-[0-9]{4}-[0-9]{5}$/', $d['student_number']) || $d['full_name'] === '' || mb_strlen($d['full_name']) > 150 || $d['section'] === '' || mb_strlen($d['section']) > 50 || !in_array($d['course'], array_merge(array_keys($programs), [
+        if (!preg_match('/^MCC-[0-9]{4}-[0-9]{5}$/', $d['student_number']) || $d['full_name'] === '' || mb_strlen($d['full_name']) > 150 || !preg_match('/^[A-Z]+[1-9][0-9]*$/', $d['section']) || mb_strlen($d['section']) > 50 || !in_array($d['course'], array_merge(array_keys($programs), [
             'CCS',
             'CAS',
             'CRIM'
@@ -96,6 +96,7 @@ class StudentController extends Controller
             $filters = [
                 'search' => mb_substr(trim((string) ($_GET['search'] ?? '')), 0, 100),
                 'account_status' => $_GET['account_status'] ?? '',
+                'departure_reason' => $_GET['departure_reason'] ?? '',
                 'activation_status' => $_GET['activation_status'] ?? '',
                 'qr_status' => $_GET['qr_status'] ?? '',
                 'course' => $_GET['course'] ?? '',
@@ -207,35 +208,64 @@ class StudentController extends Controller
 
     public function update(): void
     {
+        $this->api->require_method('POST');
         $this->admin(function () {
-            $v = $this->input();
-            $id = filter_var($v['id'] ?? null, FILTER_VALIDATE_INT, [
-                'options' => [
-                    'min_range' => 1
-                ]
-            ]);
-            $d = $this->validate($v);
-            if (!$id || !$d) {
-                return $this->fail('Invalid student ID or details.');
-            }
-            if (!$this->StudentModel->find_by_id((int) $id)) {
-                return $this->fail('Student not found.', 404);
-            }
-            if ($this->StudentModel->student_number_exists($d['student_number'], (int) $id)) {
-                return $this->fail('Student number already belongs to another student.', 409);
-            }
             try {
-                if (!$this->StudentModel->update_student_details((int) $id, $d)) {
-                    return $this->fail('Update failed.', 500);
-                }
+                $input = $this->input();
+                $auth = $this->api->require_jwt();
+                $data = $this->StudentModel->update_students($input, (int) $auth['sub']);
                 $this->api->respond([
                     'success' => true,
-                    'message' => 'Student details updated.'
-                ], 200);
+                    'message' => $input['preview'] ? 'Review the proposed changes.' : $data['count'] . ' student records updated.',
+                    'data' => $data,
+                ]);
+            } catch (DomainException $e) {
+                $this->fail($e->getMessage(), $e->getCode() ?: 422);
             } catch (Throwable $e) {
-                error_log('Student update: ' . $e->getMessage());
-                $this->fail('Unable to update student.', 500);
+                error_log('Student batch update: ' . get_class($e));
+                $this->fail('Unable to update students. Check that the student_updates migration has been applied.', 500);
             }
+        });
+    }
+
+    public function matching_students(): void
+    {
+        $this->api->require_method('GET');
+        $this->admin(function () {
+            try {
+                $ids = $this->StudentModel->matching_student_ids($_GET);
+                if (count($ids) > 2000) {
+                    throw new DomainException('Narrow the filters to at most 2,000 matching students.', 422);
+                }
+                $this->api->respond(['success' => true, 'data' => ['student_ids' => $ids, 'count' => count($ids)]]);
+            } catch (DomainException $e) {
+                $this->fail($e->getMessage(), $e->getCode() ?: 422);
+            }
+        });
+    }
+
+    public function profile(): void
+    {
+        $this->api->require_method('GET');
+        $this->admin(function () {
+            $id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $student = $id ? $this->StudentModel->profile_details((int) $id) : null;
+            if (!$student) {
+                return $this->fail('Student not found.', 404);
+            }
+            $this->api->respond(['success' => true, 'data' => $student]);
+        });
+    }
+
+    public function change_history(): void
+    {
+        $this->api->require_method('GET');
+        $this->admin(function () {
+            $id = filter_var($_GET['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (!$id || !$this->StudentModel->find_by_id((int) $id)) {
+                return $this->fail('Student not found.', 404);
+            }
+            $this->api->respond(['success' => true, 'data' => $this->StudentModel->change_history((int) $id)]);
         });
     }
 
@@ -270,35 +300,6 @@ class StudentController extends Controller
                 error_log('Student delete: ' . $e->getMessage());
                 $this->fail('Unable to delete; related records may exist.', 409);
             }
-        });
-    }
-
-    public function account_status(): void
-    {
-        $this->admin(function () {
-            $v = $this->input();
-            $id = filter_var($v['id'] ?? null, FILTER_VALIDATE_INT, [
-                'options' => [
-                    'min_range' => 1
-                ]
-            ]);
-            $status = strtoupper(trim((string) ($v['status'] ?? '')));
-            if (!$id || !in_array($status, [
-                'ACTIVE',
-                'INACTIVE'
-            ], true)) {
-                return $this->fail('Invalid ID or status.');
-            }
-            if (!$this->StudentModel->find_by_id((int) $id)) {
-                return $this->fail('Student not found.', 404);
-            }
-            if (!$this->StudentModel->set_account_status((int) $id, $status)) {
-                return $this->fail('Status update failed.', 500);
-            }
-            $this->api->respond([
-                'success' => true,
-                'message' => 'Account status updated.'
-            ], 200);
         });
     }
 
@@ -369,6 +370,7 @@ class StudentController extends Controller
 
     public function qr_status(): void
     {
+        $this->api->require_method('POST');
         $this->admin(function () {
             $v = $this->input();
             $id = filter_var($v['id'] ?? null, FILTER_VALIDATE_INT, [
@@ -386,10 +388,14 @@ class StudentController extends Controller
             if (!$this->StudentModel->find_by_id((int) $id)) {
                 return $this->fail('Student not found.', 404);
             }
-            $token = $action === 'REGENERATE' ? bin2hex(random_bytes(32)) : null;
-            $status = $action === 'REVOKE' ? 'REVOKED' : 'ACTIVE';
-            if (!$this->StudentModel->set_qr_status((int) $id, $status, $token)) {
-                return $this->fail('QR update failed.', 500);
+            try {
+                $auth = $this->api->require_jwt();
+                $this->call->model('QrCredentialModel')->change((int) $id, (int) $auth['sub'], $action === 'REGENERATE');
+            } catch (DomainException $error) {
+                return $this->fail($error->getMessage(), $error->getCode() ?: 422);
+            } catch (Throwable $error) {
+                error_log('QR credentials: ' . get_class($error));
+                return $this->fail('Unable to update QR credentials.', 500);
             }
             $this->api->respond([
                 'success' => true,

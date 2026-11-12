@@ -32,7 +32,8 @@ class PaymentModel extends Model
     private function student(int $userId, bool $lock = false): array
     {
         if ($lock) {
-            $row = $this->db->raw("SELECT s.* FROM students s JOIN users u ON u.id=s.user_id WHERE u.id=? AND u.status='ACTIVE'
+            // FOR UPDATE serializes payment claims for the same student.
+            $row = $this->db->raw("SELECT s.id, s.course FROM students s JOIN users u ON u.id=s.user_id WHERE u.id=? AND u.status='ACTIVE'
                 AND u.role='STUDENT' AND s.account_status='ACTIVE' AND s.activation_status='ACTIVATED' FOR UPDATE", [
                 $userId
             ])->fetch(PDO::FETCH_ASSOC);
@@ -55,6 +56,8 @@ class PaymentModel extends Model
 
     public function fines(int $studentId): array
     {
+        // UNION combines attendance and standalone violations; the derived table totals allocations.
+        // The installed builder has no UNION/subquery builder, so values remain bound here.
         $sql = "SELECT CONCAT('scan-',r.id) fine_key,e.org_user_id,CASE WHEN r.record_type='ATTENDANCE' THEN 'Attendance fine' ELSE v.name END violation_name,e.name event_name,r.fine_amount,r.recorded_at,u.organization_name,r.record_type
             FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
             LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE r.student_id=? AND (r.record_type='VIOLATION' OR r.fine_amount>0)
@@ -67,24 +70,30 @@ class PaymentModel extends Model
             $studentId,
             $studentId
         ])->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($rows as & $row) {
-            $total = $this->cents((string) $row['fine_amount']);
-            $paid = $this->cents((string) $row['paid_amount']);
-            $pending = $this->cents((string) $row['pending_amount']);
-            $row['outstanding'] = $this->decimal(max(0, $total - $paid));
-            $row['available_to_claim'] = $this->decimal(max(0, $total - $paid - $pending));
-            $row['payment_status'] = $paid >= $total ? 'PAID' : ($paid > 0 ? 'PARTIALLY_PAID' : 'UNPAID');
+        return $this->call->model('PaymentPeriodModel')->apply($rows);
+    }
+
+    private function claims(string $ownerColumn, int $ownerId): array
+    {
+        $columns = 'p.id, p.student_id, p.org_user_id, p.fine_key, p.amount, p.method, '
+            . 'p.reference_number, p.status, p.submitted_at, p.reviewed_at, p.review_note, '
+            . 'p.receipt_number, p.proof_file, s.full_name, s.student_number, u.organization_name';
+        $rows = $this->db->table('payment_claims p')
+            ->select($columns)
+            ->select_count('i.fine_key', 'fine_count')
+            ->join('students s', 's.id=p.student_id')
+            ->join('users u', 'u.id=p.org_user_id')
+            ->left_join('payment_claim_items i', 'i.claim_id=p.id')
+            ->where($ownerColumn, $ownerId)
+            ->group_by(explode(', ', $columns))
+            ->order_by('p.id', 'DESC')
+            ->get_all();
+        foreach ($rows as &$row) {
+            $row['has_proof'] = $row['proof_file'] !== null ? 1 : 0;
+            unset($row['proof_file']);
         }
         unset($row);
         return $rows;
-    }
-
-    private function claims(string $where, array $params): array
-    {
-        return $this->db->raw("SELECT p.id,p.student_id,p.org_user_id,p.fine_key,p.amount,p.method,p.reference_number,p.status,p.submitted_at,
-            p.reviewed_at,p.review_note,p.receipt_number,(p.proof_file IS NOT NULL) has_proof,
-            (SELECT COUNT(*) FROM payment_claim_items i WHERE i.claim_id=p.id) fine_count,s.full_name,s.student_number,u.organization_name
-            FROM payment_claims p JOIN students s ON s.id=p.student_id JOIN users u ON u.id=p.org_user_id WHERE {$where} ORDER BY p.id DESC", $params)->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function overview(int $userId): array
@@ -93,19 +102,23 @@ class PaymentModel extends Model
         $fines = $this->fines((int) $student['id']);
         $total = 0;
         $paid = 0;
+        $adjustment = 0;
+        $discount = 0;
         foreach ($fines as $fine) {
             $total += $this->cents((string) $fine['fine_amount']);
             $paid += $this->cents((string) $fine['paid_amount']);
+            $adjustment += $this->cents((string) $fine['cap_adjustment']);
+            $discount += $this->cents((string) $fine['discount_amount']);
         }
         return [
             'fines' => $fines,
-            'claims' => $this->claims('p.student_id=?', [
-                $student['id']
-            ]),
+            'claims' => $this->claims('p.student_id', (int) $student['id']),
             'summary' => [
                 'total_fines' => $this->decimal($total),
                 'paid_amount' => $this->decimal($paid),
-                'outstanding' => $this->decimal(max(0, $total - $paid))
+                'cap_adjustment' => $this->decimal($adjustment),
+                'discount_amount' => $this->decimal($discount),
+                'outstanding' => $this->decimal(max(0, $total - $paid - $adjustment - $discount))
             ]
         ];
     }
@@ -123,6 +136,9 @@ class PaymentModel extends Model
     public function submit(int $userId, array $data, ?array $proof = null): void
     {
         $key = $data['fine_key'] ?? '';
+        if ($key !== 'ALL') {
+            throw new DomainException('Pay the full payable balance for an organization.', 422);
+        }
         $method = $data['method'] ?? '';
         $reference = trim(is_string($data['reference_number'] ?? '') ? ($data['reference_number'] ?? '') : '');
         if (!is_string($key) || !in_array($method, [
@@ -141,8 +157,12 @@ class PaymentModel extends Model
         if ($method === 'GCASH' && !$proof) {
             throw new DomainException('Upload GCash proof of payment.', 422);
         }
+        $this->student($userId);
+        $paymentOrgId = (int) ($data['organization_id'] ?? 0);
         $this->db->transaction();
         try {
+            // Lock before reading balances so schedule edits and submissions cannot race.
+            $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [$paymentOrgId]);
             $student = $this->student($userId, true);
             $items = [];
             if ($key === 'ALL') {
@@ -160,7 +180,10 @@ class PaymentModel extends Model
                 }
                 $total = 0;
                 foreach ($this->fines((int) $student['id']) as $candidate) {
-                    if ((int) $candidate['org_user_id'] !== $orgId) {
+                    if ((int) $candidate['org_user_id'] === $orgId && $this->cents((string) $candidate['pending_amount']) > 0) {
+                        throw new DomainException('An existing payment claim is pending for this organization. Wait for its review or cancel it before paying.', 409);
+                    }
+                    if ((int) $candidate['org_user_id'] !== $orgId || $candidate['payment_window'] !== 'OPEN') {
                         continue;
                     }
                     $available = $this->cents($candidate['available_to_claim']);
@@ -179,16 +202,7 @@ class PaymentModel extends Model
                     'org_user_id' => $orgId
                 ];
                 $key = 'all-' . bin2hex(random_bytes(16));
-            } else {
-                $fine = $this->own_fine((int) $student['id'], $key);
-                if ($amount > $this->cents($fine['available_to_claim'])) {
-                    throw new DomainException('Amount exceeds the balance available after pending claims.', 409);
-                }
             }
-            // The organization row serializes duplicate reference checks across its students.
-            $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [
-                $fine['org_user_id']
-            ]);
             if ($method === 'GCASH' && $this->db->table('payment_claims')
                 ->select('id')
                 ->where('method', '=', 'GCASH')
@@ -200,6 +214,7 @@ class PaymentModel extends Model
                 ->get(PDO::FETCH_COLUMN)) {
                 throw new DomainException('This reference already has a pending or confirmed claim.', 409);
             }
+            // The generated unique reference index rejects duplicate GCash claims atomically.
             $insert = $this->db->raw("INSERT IGNORE INTO payment_claims
                 (student_id,org_user_id,fine_key,amount,method,reference_number,proof_file,proof_mime,submitted_at,status)
                 VALUES (?,?,?,?,?,?,?,?,?,'PENDING')", [
@@ -237,7 +252,7 @@ class PaymentModel extends Model
         $this->db->transaction();
         try {
             $s = $this->student($userId, true);
-            $claim = $this->db->raw('SELECT * FROM payment_claims WHERE id=? AND student_id=? FOR UPDATE', [
+            $claim = $this->db->raw('SELECT id, status FROM payment_claims WHERE id=? AND student_id=? FOR UPDATE', [
                 $claimId,
                 $s['id']
             ])->fetch(PDO::FETCH_ASSOC);
@@ -271,8 +286,7 @@ class PaymentModel extends Model
     private function call_org_model(): void
     {
         if (!$this->orgModel) {
-            require_once __DIR__ . '/OrgEventModel.php';
-            $this->orgModel = new OrgEventModel();
+            $this->orgModel = $this->call->model('OrgEventModel');
         }
     }
 
@@ -284,9 +298,7 @@ class PaymentModel extends Model
     public function organization_claims(int $orgId): array
     {
         $org = $this->org($orgId);
-        $rows = $this->claims('p.org_user_id=?', [
-            $orgId
-        ]);
+        $rows = $this->claims('p.org_user_id', $orgId);
         return array_values(array_filter($rows, function ($row) use ($org) {
             $s = $this->db->table('students')
                 ->select('course')
@@ -304,7 +316,6 @@ class PaymentModel extends Model
         if (!is_string($search) || mb_strlen($search) > 100 || !is_string($status) || !in_array($status, [
             '',
             'UNPAID',
-            'PARTIALLY_PAID',
             'PAID'
         ], true)) {
             throw new DomainException('Invalid fine filters.', 422);
@@ -337,6 +348,7 @@ class PaymentModel extends Model
             $orgId,
             $orgId
         ])->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $this->call->model('PaymentPeriodModel')->apply($rows);
         $students = [];
         foreach ($rows as $row) {
             if (!$this->org_scope($org, $row['course'])) {
@@ -360,11 +372,13 @@ class PaymentModel extends Model
                     'course',
                     'year_level',
                     'section'
-                ])) + ['total' => 0, 'paid' => 0, 'pending' => 0, 'balance' => 0, 'fines' => []];
+                ])) + ['total' => 0, 'paid' => 0, 'pending' => 0, 'balance' => 0, 'adjustment' => 0, 'discount' => 0, 'fines' => []];
             }
             $total = $this->cents((string) $row['fine_amount']);
             $paid = $this->cents((string) $row['paid_amount']);
-            $balance = max(0, $total - $paid);
+            $balance = $this->cents((string) $row['outstanding']);
+            $students[$id]['adjustment'] += $this->cents((string) $row['cap_adjustment']);
+            $students[$id]['discount'] += $this->cents((string) $row['discount_amount']);
             $students[$id]['total'] += $total;
             $students[$id]['paid'] += $paid;
             $students[$id]['pending'] += $this->cents((string) $row['pending_amount']);
@@ -376,6 +390,10 @@ class PaymentModel extends Model
                 'fine_amount',
                 'paid_amount',
                 'pending_amount',
+                'cap_adjustment',
+                'discount_amount',
+                'payable_amount',
+                'semester_label',
                 'recorded_at',
                 'record_type'
             ])) + ['outstanding' => $this->decimal($balance)];
@@ -383,17 +401,21 @@ class PaymentModel extends Model
         $data = [];
         $totals = [
             'total_fine' => 0,
+            'cap_adjustment' => 0,
+            'discount_amount' => 0,
             'paid_amount' => 0,
             'pending_amount' => 0,
             'outstanding' => 0
         ];
         foreach ($students as $student) {
-            $student['payment_status'] = $student['balance'] === 0 ? 'PAID' : ($student['paid'] > 0 ? 'PARTIALLY_PAID' : 'UNPAID');
+            $student['payment_status'] = $student['balance'] === 0 ? 'PAID' : 'UNPAID';
             if ($status !== '' && $student['payment_status'] !== $status) {
                 continue;
             }
             foreach ([
                 'total_fine' => 'total',
+                'cap_adjustment' => 'adjustment',
+                'discount_amount' => 'discount',
                 'paid_amount' => 'paid',
                 'pending_amount' => 'pending',
                 'outstanding' => 'balance'
@@ -428,6 +450,8 @@ class PaymentModel extends Model
                 'student_number' => 'Student Number',
                 'violation_count' => 'Violations',
                 'total_fine' => 'Total Fines (PHP)',
+                'cap_adjustment' => 'Cap Reduction (PHP)',
+                'discount_amount' => 'Voucher / Discount (PHP)',
                 'paid_amount' => 'Confirmed Payments (PHP)',
                 'pending_amount' => 'Pending Claims (PHP)',
                 'outstanding' => 'Outstanding (PHP)',
@@ -450,6 +474,7 @@ class PaymentModel extends Model
         $org = $this->org($orgId);
         $this->db->transaction();
         try {
+            $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [$orgId]);
             $initial = $this->db->table('payment_claims')
                 ->select('student_id')
                 ->where('id', '=', $claimId)
@@ -458,13 +483,13 @@ class PaymentModel extends Model
             if (!$initial) {
                 throw new DomainException('Claim not found.', 404);
             }
-            $student = $this->db->raw('SELECT * FROM students WHERE id=? FOR UPDATE', [
+            $student = $this->db->raw('SELECT id, course FROM students WHERE id=? FOR UPDATE', [
                 $initial
             ])->fetch(PDO::FETCH_ASSOC);
             if (!$this->org_scope($org, $student['course'])) {
                 throw new DomainException('Student is outside your course.', 403);
             }
-            $claim = $this->db->raw('SELECT * FROM payment_claims WHERE id=? AND org_user_id=? FOR UPDATE', [
+            $claim = $this->db->raw('SELECT id, student_id, org_user_id, fine_key, amount, status FROM payment_claims WHERE id=? AND org_user_id=? FOR UPDATE', [
                 $claimId,
                 $orgId
             ])->fetch(PDO::FETCH_ASSOC);

@@ -6,6 +6,7 @@ class UserModel extends Model
     // This model uses the existing users table.
 
     protected $table = 'users';
+    protected $guarded = ['id', 'password_hash', 'role', 'status', 'auth_version'];
 
     public function __construct()
     {
@@ -19,12 +20,14 @@ class UserModel extends Model
     public function find_by_login($identifier)
     {
         $user = $this->db->table($this->table)
+            ->select('id, username, email, password_hash, role, status, organization_name')
             ->where('username', $identifier)
             ->get();
         if (!empty($user)) {
             return $user;
         }
         return $this->db->table($this->table)
+            ->select('id, username, email, password_hash, role, status, organization_name')
             ->where('email', $identifier)
             ->get();
     }
@@ -36,20 +39,8 @@ class UserModel extends Model
     public function find_by_id($id)
     {
         return $this->db->table($this->table)
+            ->select('id, username, email, role, status, organization_name, auth_version')
             ->where('id', (int) $id)
             ->get();
-    }
-    /**
-     * Run a small read-only query to confirm the users table is accessible.
-     * An empty table is valid; a failed query is not.
-     */
-
-    public function check_connection()
-    {
-        $result = $this->db->table($this->table)
-            ->select('id')
-            ->limit(1)
-            ->get_all();
-        return is_array($result);
     }
 }

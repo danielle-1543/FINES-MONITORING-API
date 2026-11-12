@@ -39,7 +39,8 @@ class StudentPortalModel extends StudentAccountModel
         if (array_diff(array_keys($data), $allowed)) {
             throw new DomainException('Only permitted account fields may be updated.', 422);
         }
-        $user = $this->db->raw('SELECT * FROM users WHERE id=? FOR UPDATE', [
+        // Lock credentials while verifying the current password and updating the account.
+        $user = $this->db->raw('SELECT id, username, email, role, status, password_hash FROM users WHERE id=? FOR UPDATE', [
             $userId
         ])->fetch(PDO::FETCH_ASSOC);
         if (!$user || $user['role'] !== 'STUDENT' || $user['status'] !== 'ACTIVE') {
@@ -84,6 +85,7 @@ class StudentPortalModel extends StudentAccountModel
                     ->get()) {
                     throw new DomainException('That username or email is already registered.', 409);
                 }
+                // IGNORE lets the unique indexes reject a concurrent username/email claim.
                 $updated = $this->db->raw('UPDATE IGNORE users SET username=?,email=? WHERE id=?', [
                     $username,
                     $email,
@@ -139,10 +141,9 @@ class StudentPortalModel extends StudentAccountModel
 
     private function records_query(int $userId, array $filters): array
     {
-        require_once __DIR__ . '/PaymentModel.php';
-        $allocations = (new PaymentModel())->allocated_payments();
-        require_once __DIR__ . '/AttendanceModel.php';
-        (new AttendanceModel())->finalize();
+        // UNION and derived payment totals are not exposed by the installed Query Builder.
+        $allocations = $this->call->model('PaymentModel')->allocated_payments();
+        $this->call->model('AttendanceModel')->finalize();
         $student = $this->own($userId);
         $id = (int) $student['id'];
         $kind = $filters['kind'] ?? 'ATTENDANCE';
@@ -153,7 +154,7 @@ class StudentPortalModel extends StudentAccountModel
             throw new DomainException('Choose attendance or violations.', 422);
         }
         if ($kind === 'ATTENDANCE') {
-            $base = "SELECT CONCAT('scan-',r.id) id,e.name event_name,u.organization_name,r.recorded_at,r.attendance_status,
+            $base = "SELECT CONCAT('scan-',r.id) id,e.name event_name,u.id org_user_id,u.organization_name,r.recorded_at,r.attendance_status,
                 '' violation_name,r.fine_amount,COALESCE(p.paid_amount,0) paid_amount,GREATEST(0,r.fine_amount-COALESCE(p.paid_amount,0)) outstanding
                 FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
                 LEFT JOIN (SELECT fine_key,SUM(amount) paid_amount FROM (" . $allocations . ") allocated WHERE student_id=? AND status='CONFIRMED' GROUP BY fine_key) p ON p.fine_key=CONCAT('scan-',r.id)
@@ -164,10 +165,10 @@ class StudentPortalModel extends StudentAccountModel
             ];
         } else {
             $base = "SELECT f.*,COALESCE(p.paid_amount,0) paid_amount,GREATEST(0,f.fine_amount-COALESCE(p.paid_amount,0)) outstanding FROM (
-                SELECT CONCAT('scan-',r.id) id,e.name event_name,u.organization_name,r.recorded_at,'' attendance_status,v.name violation_name,r.fine_amount
+                SELECT CONCAT('scan-',r.id) id,e.name event_name,u.id org_user_id,u.organization_name,r.recorded_at,'' attendance_status,v.name violation_name,r.fine_amount
                 FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
                 LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE r.student_id=? AND r.record_type='VIOLATION'
-                UNION ALL SELECT CONCAT('violation-',r.id),COALESCE(e.name,'Standalone violation'),u.organization_name,r.recorded_at,'',r.violation_name,r.fine_amount
+                UNION ALL SELECT CONCAT('violation-',r.id),COALESCE(e.name,'Standalone violation'),u.id,u.organization_name,r.recorded_at,'',r.violation_name,r.fine_amount
                 FROM org_violation_records r JOIN users u ON u.id=r.org_user_id LEFT JOIN org_events e ON e.id=r.event_id WHERE r.student_id=?
                 ) f LEFT JOIN (SELECT fine_key,SUM(amount) paid_amount FROM (" . $allocations . ") allocated WHERE student_id=? AND status='CONFIRMED' GROUP BY fine_key) p ON p.fine_key=f.id";
             $params = [
@@ -216,14 +217,33 @@ class StudentPortalModel extends StudentAccountModel
     public function history(int $userId, array $filters): array
     {
         [$sql, $params] = $this->records_query($userId, $filters);
-        $total = (int) $this->db->raw('SELECT COUNT(*) FROM (' . $sql . ') counted', $params)->fetchColumn();
+        $rows = $this->adjusted_history($userId, $sql, $params);
+        $organizations = [];
+        foreach ($rows as $row) {
+            $organizations[$row['org_user_id']] = ['id' => $row['org_user_id'], 'name' => $row['organization_name']];
+        }
+        $rows = $this->filter_organization($rows, $filters);
+        $total = count($rows);
         $pages = max(1, (int) ceil($total / 25));
         $page = min($pages, max(1, (int) ($filters['page'] ?? 1)));
         $offset = ($page - 1) * 25;
-        $rows = $this->db->raw($sql . " ORDER BY recorded_at DESC,id DESC LIMIT 25 OFFSET {$offset}", $params)->fetchAll(PDO::FETCH_ASSOC);
-        $totals = $this->db->raw('SELECT COALESCE(SUM(fine_amount),0) total_fines,COALESCE(SUM(paid_amount),0) paid_amount,COALESCE(SUM(outstanding),0) outstanding FROM (' . $sql . ') summed', $params)->fetch(PDO::FETCH_ASSOC);
+        $totals = [];
+        foreach ([
+            'total_fines' => 'fine_amount',
+            'paid_amount' => 'paid_amount',
+            'outstanding' => 'outstanding',
+            'cap_adjustment' => 'cap_adjustment',
+            'discount_amount' => 'discount_amount',
+        ] as $name => $field) {
+            $cents = 0;
+            foreach ($rows as $row) {
+                $cents += (int) round((float) $row[$field] * 100);
+            }
+            $totals[$name] = number_format($cents / 100, 2, '.', '');
+        }
         return [
-            'data' => $rows,
+            'data' => array_slice($rows, $offset, 25),
+            'organizations' => array_values($organizations),
             'summary' => $totals,
             'pagination' => [
                 'current_page' => $page,
@@ -237,17 +257,49 @@ class StudentPortalModel extends StudentAccountModel
     {
         [$sql, $params] = $this->records_query($userId, $filters);
         return [
-            'data' => $this->db->raw($sql . ' ORDER BY recorded_at DESC,id DESC', $params)->fetchAll(PDO::FETCH_ASSOC),
+            'data' => $this->filter_organization($this->adjusted_history($userId, $sql, $params), $filters),
             'columns' => [
                 'event_name' => 'Event',
                 'organization_name' => 'Organization',
-                'recorded_at' => 'Recorded At (PHT)',
+                'recorded_at' => 'Recorded At',
                 'attendance_status' => 'Attendance Status',
                 'violation_name' => 'Violation',
                 'fine_amount' => 'Fine (PHP)',
+                'cap_adjustment' => 'Cap Reduction (PHP)',
+                'discount_amount' => 'Voucher / Discount (PHP)',
                 'paid_amount' => 'Paid (PHP)',
                 'outstanding' => 'Outstanding (PHP)'
             ]
         ];
+    }
+
+    private function adjusted_history(int $userId, string $sql, array $params): array
+    {
+        $rows = $this->db->raw($sql . ' ORDER BY recorded_at DESC,id DESC', $params)->fetchAll(PDO::FETCH_ASSOC);
+        $student = $this->own($userId);
+        $fines = array_column($this->call->model('PaymentModel')->fines((int) $student['id']), null, 'fine_key');
+        foreach ($rows as &$row) {
+            $fine = $fines[$row['id']] ?? null;
+            $row['cap_adjustment'] = $fine['cap_adjustment'] ?? '0.00';
+            $row['discount_amount'] = $fine['discount_amount'] ?? '0.00';
+            if ($fine !== null) {
+                $row['outstanding'] = $fine['outstanding'];
+            }
+        }
+        unset($row);
+        return $rows;
+    }
+
+    private function filter_organization(array $rows, array $filters): array
+    {
+        $id = $filters['organization_id'] ?? '';
+        if ($id === '') {
+            return $rows;
+        }
+        $id = filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$id) {
+            throw new DomainException('Choose a valid organization.', 422);
+        }
+        return array_values(array_filter($rows, static fn ($row) => (int) $row['org_user_id'] === $id));
     }
 }

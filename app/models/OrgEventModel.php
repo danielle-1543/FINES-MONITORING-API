@@ -32,8 +32,7 @@ class OrgEventModel extends Model
         if (!$user || $user['role'] !== 'ORGANIZATION' || $user['status'] !== 'ACTIVE') {
             throw new DomainException('An active organization account is required.', 403);
         }
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $selected = $this->db->table('organization_programs')
             ->select('program')
             ->where('org_user_id', '=', $orgId)
@@ -131,17 +130,24 @@ class OrgEventModel extends Model
 
     public function events(int $orgId): array
     {
-        return $this->db->raw('SELECT e.*, v.name AS violation_name, v.fine_amount,
-                (SELECT COUNT(*) FROM org_scan_records r WHERE r.event_id = e.id) AS scan_count
-             FROM org_events e LEFT JOIN org_violation_types v ON v.id = e.violation_type_id AND v.org_user_id = e.org_user_id
-             WHERE e.org_user_id = ? ORDER BY e.id DESC', [
-            $orgId
-        ])->fetchAll(PDO::FETCH_ASSOC);
+        $columns = 'e.id, e.org_user_id, e.name, e.event_type, e.violation_type_id, '
+            . 'e.scan_starts_at, e.scan_ends_at, e.session_open, e.created_at, '
+            . 'e.absence_enabled, e.attendance_finalized_at, e.absence_fine_amount, v.name, v.fine_amount';
+        return $this->db->table('org_events e')
+            ->select(str_replace('v.name', 'v.name AS violation_name', $columns))
+            ->select_count('r.id', 'scan_count')
+            ->left_join('org_violation_types v', 'v.id=e.violation_type_id AND v.org_user_id=e.org_user_id')
+            ->left_join('org_scan_records r', 'r.event_id=e.id')
+            ->where('e.org_user_id', $orgId)
+            ->group_by(explode(', ', $columns))
+            ->order_by('e.id', 'DESC')
+            ->get_all();
     }
 
     private function event(int $orgId, int $id, bool $lock = false): array
     {
         if ($lock) {
+            // Row locks keep editing, scan confirmation and absence finalization consistent.
             $event = $this->db->raw('SELECT * FROM org_events WHERE org_user_id = ? AND id = ? FOR UPDATE', [
                 $orgId,
                 $id
@@ -180,6 +186,13 @@ class OrgEventModel extends Model
             throw new DomainException('Enter an event name, type, and an end time after the start time.', 422);
         }
         $violationId = null;
+        $absenceFine = $this->text($data, 'absence_fine_amount');
+        if ($absenceFine === '' && !array_key_exists('absence_fine_amount', $data)) {
+            $absenceFine = '0.00';
+        }
+        if (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/', $absenceFine)) {
+            throw new DomainException('Enter a valid nonnegative absence fine with up to two decimal places.', 422);
+        }
         if ($type === 'VIOLATION') {
             $violationId = $this->id($data['violation_type_id'] ?? null);
             $this->violation_type($orgId, $violationId);
@@ -189,6 +202,7 @@ class OrgEventModel extends Model
             'event_type' => $type,
             'violation_type_id' => $violationId,
             'scan_starts_at' => $start,
+            'absence_fine_amount' => $type === 'ATTENDANCE' ? $absenceFine : '0.00',
             'scan_ends_at' => $end
         ];
     }
@@ -205,8 +219,7 @@ class OrgEventModel extends Model
                 ->insert($values);
             $eventId = (int) $this->db->last_id();
             if ($values['absence_enabled']) {
-                require_once __DIR__ . '/AttendanceModel.php';
-                (new AttendanceModel())->snapshot($eventId, $orgId);
+                $this->call->model('AttendanceModel')->snapshot($eventId, $orgId);
             }
         });
     }
@@ -236,8 +249,7 @@ class OrgEventModel extends Model
                     'attendance_finalized_at' => null
                 ]);
             if ($values['event_type'] === 'ATTENDANCE') {
-                require_once __DIR__ . '/AttendanceModel.php';
-                (new AttendanceModel())->snapshot($id, $orgId);
+                $this->call->model('AttendanceModel')->snapshot($id, $orgId);
             }
         });
     }
@@ -293,22 +305,47 @@ class OrgEventModel extends Model
                 LEFT JOIN org_events e ON e.id=x.event_id WHERE {$extraWhere}";
             array_push($params,...$more);
         }
+        // Apply the same filters to event-linked and standalone violations.
+        $conditions = [];
+        foreach (['student_number', 'section', 'year_level', 'violation_name'] as $field) {
+            $value = mb_substr($this->text($filters, $field), 0, 100);
+            if ($value === '') {
+                continue;
+            }
+            $conditions[] = $field . ($field === 'student_number' ? ' LIKE ?' : ' = ?');
+            $params[] = $field === 'student_number' ? '%' . $value . '%' : $value;
+        }
+        $search = mb_substr($this->text($filters, 'search'), 0, 100);
+        if ($search !== '') {
+            $conditions[] = '(student_number LIKE ? OR full_name LIKE ?)';
+            array_push($params, '%' . $search . '%', '%' . $search . '%');
+        }
+        $attendanceStatus = $this->text($filters, 'attendance_status');
+        if ($attendanceStatus !== '') {
+            if (!in_array($attendanceStatus, ['PRESENT', 'ABSENT'], true)) {
+                throw new DomainException('Invalid attendance status.', 422);
+            }
+            $conditions[] = 'attendance_status = ?';
+            $params[] = $attendanceStatus;
+        }
+        if ($conditions) {
+            $sql = 'SELECT * FROM (' . $sql . ') filtered_records WHERE ' . implode(' AND ', $conditions);
+        }
         return [
             $sql,
             $params
         ];
     }
 
-    private function sorted(): string
+    private function sorted(array $filters = [], bool $students = false): string
     {
-        return ' ORDER BY course ASC, CAST(year_level AS UNSIGNED) ASC, year_level ASC, section ASC, full_name ASC, student_number ASC, recorded_at DESC, id ASC';
-    }
-
-    public function records(int $orgId, array $filters = [], int $limit = 100): array
-    {
-        [$sql, $params] = $this->records_query($orgId, $filters);
-        $limit = max(1, min(100, $limit));
-        return $this->db->raw('SELECT * FROM (' . $sql . ') records' . $this->sorted() . ' LIMIT ' . $limit, $params)->fetchAll(PDO::FETCH_ASSOC);
+        $sort = $filters['sort'] ?? 'az';
+        if ($sort === 'recent') {
+            $date = $students ? 'registered_at' : 'recorded_at';
+            return ' ORDER BY ' . $date . ' DESC, id DESC, full_name ASC';
+        }
+        $direction = $sort === 'za' ? 'DESC' : 'ASC';
+        return ' ORDER BY full_name ' . $direction . ', student_number ASC, id ASC';
     }
 
     private function page_query(string $sql, array $params, array $filters, string $order): array
@@ -331,13 +368,13 @@ class OrgEventModel extends Model
     public function records_page(int $orgId, array $filters): array
     {
         [$sql, $params] = $this->records_query($orgId, $filters);
-        return $this->page_query($sql, $params, $filters, $this->sorted());
+        return $this->page_query($sql, $params, $filters, $this->sorted($filters));
     }
 
     public function export_records(int $orgId, array $filters)
     {
         [$sql, $params] = $this->records_query($orgId, $filters);
-        return $this->db->raw('SELECT * FROM (' . $sql . ') records' . $this->sorted(), $params);
+        return $this->db->raw('SELECT * FROM (' . $sql . ') records' . $this->sorted($filters), $params);
     }
 
     private function students_query(int $orgId, array $filters): array
@@ -345,12 +382,19 @@ class OrgEventModel extends Model
         $params = [];
         $where = $this->course_scope($orgId, 's', $params);
         $search = mb_substr($this->text($filters, 'search'), 0, 100);
+        foreach (['course', 'year_level', 'section'] as $field) {
+            $value = mb_substr($this->text($filters, $field), 0, 100);
+            if ($value !== '') {
+                $where .= ' AND s.' . $field . ' = ?';
+                $params[] = $value;
+            }
+        }
         if ($search !== '') {
             $where .= ' AND (s.student_number LIKE ? OR s.full_name LIKE ? OR s.section LIKE ?)';
             array_push($params,...array_fill(0, 3, '%' . $search . '%'));
         }
         return [
-            "SELECT s.student_number,s.full_name,s.course,s.year_level,s.section,s.account_status,s.activation_status FROM students s WHERE {$where}",
+            "SELECT s.id,s.student_number,s.full_name,s.course,s.year_level,s.section,s.account_status,s.activation_status,s.registered_at FROM students s WHERE {$where}",
             $params
         ];
     }
@@ -358,13 +402,37 @@ class OrgEventModel extends Model
     public function students_page(int $orgId, array $filters): array
     {
         [$sql, $params] = $this->students_query($orgId, $filters);
-        return $this->page_query($sql, $params, $filters, ' ORDER BY course,CAST(year_level AS UNSIGNED),year_level,section,full_name,student_number');
+        $result = $this->page_query($sql, $params, $filters, $this->sorted($filters, true));
+        $courses = $this->organization($orgId)['allowed_courses'];
+        foreach (['course', 'year_level'] as $field) {
+            $query = $this->db->table('students')->select_distinct($field);
+            if ($courses !== null) {
+                $query->in('TRIM(course)', $courses ?: ['']);
+            }
+            $result['filter_options'][$field] = $query->order_by($field, 'ASC')->get_all(PDO::FETCH_COLUMN);
+        }
+        return $result;
+    }
+
+    public function absence_counts(int $orgId): array
+    {
+        $rows = $this->db->table('org_scan_records r')
+            ->join('org_events e', 'e.id=r.event_id')
+            ->select('r.student_id')
+            ->select_count('r.id', 'total_absences')
+            ->where('e.org_user_id', $orgId)
+            ->where('r.record_type', 'ATTENDANCE')
+            ->where('r.attendance_status', 'ABSENT')
+            ->group_by('r.student_id')
+            ->get_all(PDO::FETCH_ASSOC);
+
+        return array_column($rows, 'total_absences', 'student_id');
     }
 
     public function export_students(int $orgId, array $filters)
     {
         [$sql, $params] = $this->students_query($orgId, $filters);
-        return $this->db->raw($sql . ' ORDER BY course,CAST(year_level AS UNSIGNED),year_level,section,full_name,student_number', $params);
+        return $this->db->raw($sql . $this->sorted($filters, true), $params);
     }
 
     private function student_for_scan(int $orgId, string $token, bool $lock): array
@@ -461,18 +529,98 @@ class OrgEventModel extends Model
                     'fine_amount' => $type['fine_amount'],
                     'recorded_by' => $orgId,
                     'recorded_at' => $now,
+
                 ]);
+
+            $violationId = (int) $this->db->last_id();
+
+            $this->call->model('NotificationModel')
+                ->record_violation($violationId);
         }
     }
 
-    public function record_scan(int $orgId, array $data): void
+    private function duplicate_confirmation(int $orgId, int $studentId, array $types, string $now, array $data): array
     {
-        $this->write($orgId, function () use ($orgId, $data) {
+        if (!$types) {
+            return [];
+        }
+
+        $day = substr($now, 0, 10);
+        $start = $day . ' 00:00:00';
+        $end = (new DateTimeImmutable($start, new DateTimeZone('Asia/Manila')))
+            ->modify('+1 day')->format('Y-m-d H:i:s');
+        $ids = array_keys($types);
+        sort($ids);
+
+        $records = $this->db->table('org_violation_records v')
+            ->select('v.id, v.violation_type_id, v.violation_name, v.fine_amount, v.recorded_at, e.name AS event_name')
+            ->left_join('org_events e', 'e.id = v.event_id')
+            ->where('v.org_user_id', $orgId)
+            ->where('v.student_id', $studentId)
+            ->in('v.violation_type_id', $ids)
+            ->where('v.recorded_at', '>=', $start)
+            ->where('v.recorded_at', '<', $end)
+            ->order_by('v.id', 'ASC')
+            ->get_all();
+        foreach ($records as &$record) {
+            $record['record_key'] = 'violation-' . $record['id'];
+        }
+        unset($record);
+
+        // Older violation events store their base violation in scan records.
+        $scans = $this->db->table('org_scan_records r')
+            ->select('r.id, e.violation_type_id, v.name AS violation_name, r.fine_amount, r.recorded_at, e.name AS event_name')
+            ->join('org_events e', 'e.id = r.event_id')
+            ->join('org_violation_types v', 'v.id = e.violation_type_id')
+            ->where('e.org_user_id', $orgId)
+            ->where('r.student_id', $studentId)
+            ->where('r.record_type', 'VIOLATION')
+            ->in('e.violation_type_id', $ids)
+            ->where('r.recorded_at', '>=', $start)
+            ->where('r.recorded_at', '<', $end)
+            ->order_by('r.id', 'ASC')
+            ->get_all();
+        foreach ($scans as $record) {
+            $record['record_key'] = 'scan-' . $record['id'];
+            $records[] = $record;
+        }
+
+        if (!$records) {
+            return [];
+        }
+
+        // Bind confirmation to these exact records and selections. A new scan
+        // from another device requires a fresh confirmation under the write lock.
+        $token = hash('sha256', json_encode([$orgId, $studentId, $day, $ids, $records]));
+        if (is_string($data['duplicate_confirmation'] ?? null)
+            && hash_equals($token, $data['duplicate_confirmation'])) {
+            return [];
+        }
+
+        return [
+            'requires_confirmation' => true,
+            'message' => 'This student already has the selected violation recorded today. Record it again?',
+            'existing_violations' => $records,
+            'duplicate_confirmation' => $token
+        ];
+    }
+
+    public function record_scan(int $orgId, array $data): array
+    {
+        return $this->write($orgId, function () use ($orgId, $data) {
             // Recheck status, window, ownership and duplicates at confirmation time.
             [$event, $student, $fine, $now] = $this->scan_context($orgId, $data, true);
             $types = $this->selected_types($orgId, $data);
-            if ($event['event_type'] === 'VIOLATION')
+            if ($event['event_type'] === 'VIOLATION') {
+                $types[(int) $event['violation_type_id']] = $this->violation_type($orgId, (int) $event['violation_type_id']);
+            }
+            $confirmation = $this->duplicate_confirmation($orgId, (int) $student['id'], $types, $now, $data);
+            if ($confirmation) {
+                return $confirmation;
+            }
+            if ($event['event_type'] === 'VIOLATION') {
                 unset($types[(int) $event['violation_type_id']]);
+            }
             $this->db->table('org_scan_records')
                 ->insert([
                     'event_id' => $event['id'],
@@ -483,7 +631,19 @@ class OrgEventModel extends Model
                     'recorded_at' => $now,
                 ]);
             $scanId = (int) $this->db->last_id();
-            $this->save_violations($orgId, (int) $student['id'], $types, $now, (int) $event['id'], $scanId);
+
+            $this->call->model('NotificationModel')
+                ->record_scan($scanId);
+
+            $this->save_violations(
+                $orgId,
+                (int) $student['id'],
+                $types,
+                $now,
+                (int) $event['id'],
+                $scanId
+            );
+            return ['message' => 'Record saved successfully.'];
         });
     }
 
@@ -510,9 +670,9 @@ class OrgEventModel extends Model
         ];
     }
 
-    public function record_violation(int $orgId, array $data): void
+    public function record_violation(int $orgId, array $data): array
     {
-        $this->write($orgId, function () use ($orgId, $data) {
+        return $this->write($orgId, function () use ($orgId, $data) {
             $token = $this->text($data, 'qr_token');
             if (!preg_match('/^[a-f0-9]{64}$/i', $token)) {
                 throw new DomainException('Invalid QR token.', 422);
@@ -523,7 +683,12 @@ class OrgEventModel extends Model
                 throw new DomainException('Select at least one violation.', 422);
             }
             $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+            $confirmation = $this->duplicate_confirmation($orgId, (int) $student['id'], $types, $now, $data);
+            if ($confirmation) {
+                return $confirmation;
+            }
             $this->save_violations($orgId, (int) $student['id'], $types, $now);
+            return ['message' => 'Violations recorded.'];
         });
     }
 }

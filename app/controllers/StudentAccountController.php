@@ -72,6 +72,78 @@ class StudentAccountController extends Controller
         $this->student_response(true);
     }
 
+    public function push_identity(): void
+    {
+        $this->portal('GET', function ($id) {
+            $appId = trim(getenv('ONESIGNAL_APP_ID') ?: '');
+            $secret = getenv('JWT_SECRET') ?: '';
+
+            if ($appId === '' || strlen($secret) < 32) {
+                throw new DomainException(
+                    'Push notification configuration is incomplete.',
+                    503
+                );
+            }
+
+            return [
+                'data' => [
+                    'app_id' => $appId,
+                    'external_id' => hash_hmac(
+                        'sha256',
+                        'onesignal:' . $appId . ':' . $id,
+                        $secret
+                    ),
+                ],
+            ];
+        });
+    }
+    public function notifications(): void
+    {
+        $this->portal('GET', function ($id) {
+            $this->refresh_notifications($id);
+            return $this->call->model('NotificationModel')
+                ->inbox(
+                    $id,
+                    max(1, (int) ($_GET['page'] ?? 1))
+                );
+        });
+    }
+
+    public function notifications_unread(): void
+    {
+        $this->portal('GET', function ($id) {
+            $this->refresh_notifications($id);
+            return [
+                'unread_count' => $this->call
+                    ->model('NotificationModel')
+                    ->unread_count($id),
+            ];
+        });
+    }
+
+    public function notifications_read(): void
+    {
+        $this->portal('POST', function ($id, $data) {
+            $model = $this->call->model('NotificationModel');
+
+            $model->mark_read($id, $data);
+
+            return [
+                'unread_count' => $model->unread_count($id),
+             ];
+        });
+    }
+    private function refresh_notifications(int $userId): void
+    {
+        // Request-driven: no extra worker or console command is required.
+        $this->call->model('AttendanceModel')->finalize();
+        try {
+            $this->call->model('NotificationModel')->deliver_pending($userId);
+        } catch (Throwable $e) {
+            error_log('Student push delivery deferred: ' . get_class($e));
+        }
+    }
+
     private function portal(string $method, callable $work): void
     {
         header('Cache-Control: private, no-store');

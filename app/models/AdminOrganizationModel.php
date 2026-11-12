@@ -5,8 +5,7 @@ class AdminOrganizationModel extends Model
 {
     private function courses(): array
     {
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         return $catalog['organization_colleges'];
     }
 
@@ -30,6 +29,8 @@ class AdminOrganizationModel extends Model
         ], $this->courses()), true) || !$page) {
             throw new DomainException('Invalid organization filters.', 422);
         }
+        // This report uses correlated EXISTS for program fallback and scope locking,
+        // plus an explicit LIKE escape character. Keep user values in bound parameters.
         $where = "role='ORGANIZATION'";
         $params = [];
         if (trim($search) !== '') {
@@ -56,8 +57,7 @@ class AdminOrganizationModel extends Model
             $where .= " AND organization_scope='COURSE' AND organization_course=?";
             $params[] = $course;
         }
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $program = $filters['program'] ?? '';
         if (!is_string($program) || ($program !== '' && !isset($catalog['student_programs'][$program]))) {
             throw new DomainException('Invalid program filter.', 422);
@@ -81,8 +81,7 @@ class AdminOrganizationModel extends Model
             (EXISTS(SELECT 1 FROM org_events e WHERE e.org_user_id=users.id) OR EXISTS(SELECT 1 FROM org_violation_types v WHERE v.org_user_id=users.id) OR EXISTS(SELECT 1 FROM payment_claims p WHERE p.org_user_id=users.id)) scope_locked
             FROM users WHERE {$where} ORDER BY organization_name,username,id" . ($export ? '' : " LIMIT 10 OFFSET {$offset}");
         $rows = $this->db->raw($sql, $params)->fetchAll(PDO::FETCH_ASSOC);
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $groups = [];
         foreach ($catalog['organization_course_groups'] as $college => $programs) {
             $groups[$college] = array_values(array_intersect($programs, array_keys($catalog['student_programs'])));
@@ -146,8 +145,7 @@ class AdminOrganizationModel extends Model
         $scope = $data['organization_scope'] ?? 'COURSE';
         $course = $data['organization_course'] ?? '';
         $status = $data['status'] ?? 'ACTIVE';
-        require_once __DIR__ . '/ProgramCatalogModel.php';
-        $catalog = (new ProgramCatalogModel())->catalog();
+        $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $custom = array_key_exists('organization_programs', $data);
         $programs = $data['organization_programs'] ?? [];
         if ($custom && (!is_array($programs) || count($programs) > count($catalog['student_programs']))) {
@@ -193,7 +191,8 @@ class AdminOrganizationModel extends Model
         $this->db->transaction();
         try {
             if ($update) {
-                $old = $this->db->raw("SELECT * FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
+                // Lock the scope while checking whether existing records prevent changes.
+                $old = $this->db->raw("SELECT id, status, organization_scope, organization_course FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
                     $id
                 ])->fetch(PDO::FETCH_ASSOC);
                 if (!$old) {

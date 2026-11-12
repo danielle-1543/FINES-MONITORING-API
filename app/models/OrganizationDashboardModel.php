@@ -5,30 +5,25 @@ class OrganizationDashboardModel extends Model
 {
     public function overview(int $id): array
     {
-        require_once __DIR__ . '/OrgEventModel.php';
-        require_once __DIR__ . '/PaymentModel.php';
-        require_once __DIR__ . '/AttendanceModel.php';
-        $orgs = new OrgEventModel();
+        $orgs = $this->call->model('OrgEventModel');
         $org = $orgs->organization($id);
-        (new AttendanceModel())->finalize($id);
-        $params = [];
-        $scope = '1=1';
-        if ($org['allowed_courses'] !== null) {
-            $scope = 'UPPER(TRIM(s.course)) IN (' . implode(',', array_fill(0, count($org['allowed_courses']), '?')) . ')';
-            $params = $org['allowed_courses'];
-        }
-        $students = (int) $this->db->raw('SELECT COUNT(*) FROM students s WHERE ' . $scope, $params)->fetchColumn();
-        $attendance = $this->db->raw("SELECT COALESCE(SUM(r.attendance_status='PRESENT'),0) present,COALESCE(SUM(r.attendance_status='ABSENT'),0) absent
-            FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN students s ON s.id=r.student_id
-            WHERE e.org_user_id=? AND r.record_type='ATTENDANCE' AND {$scope}", array_merge([
-            $id
-        ], $params))->fetch(PDO::FETCH_ASSOC);
-        $recentAttendance = $this->db->raw("SELECT r.id,s.full_name,s.student_number,e.name event_name,r.attendance_status,r.recorded_at
-            FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN students s ON s.id=r.student_id
-            WHERE e.org_user_id=? AND r.record_type='ATTENDANCE' AND {$scope} ORDER BY r.recorded_at DESC,r.id DESC LIMIT 5", array_merge([
-            $id
-        ], $params))->fetchAll(PDO::FETCH_ASSOC);
-        $payments = new PaymentModel();
+        $this->call->model('AttendanceModel')->finalize($id);
+        $studentsQuery = $this->db->table('students s');
+        $this->scope_students($studentsQuery, $org['allowed_courses']);
+        $students = $studentsQuery->count();
+
+        $attendanceQuery = $this->attendance_query($id, $org['allowed_courses']);
+        $attendance = $attendanceQuery
+            ->select("SUM(r.attendance_status='PRESENT') AS present, SUM(r.attendance_status='ABSENT') AS absent")
+            ->get();
+
+        $recentAttendance = $this->attendance_query($id, $org['allowed_courses'])
+            ->select('r.id, s.full_name, s.student_number, e.name AS event_name, r.attendance_status, r.recorded_at')
+            ->order_by('r.recorded_at', 'DESC')
+            ->order_by('r.id', 'DESC')
+            ->limit(5)
+            ->get_all();
+        $payments = $this->call->model('PaymentModel');
         $ledger = $payments->organization_fines($id, [], true);
         $claims = $payments->organization_claims($id);
         $violations = [];
@@ -72,5 +67,24 @@ class OrganizationDashboardModel extends Model
             'recent_payments' => array_slice($claims, 0, 5),
             'events' => array_slice($events, 0, 5)
         ];
+    }
+
+    private function scope_students($query, ?array $courses): void
+    {
+        if ($courses !== null) {
+            // The students.course column uses a case-insensitive collation.
+            $query->in('TRIM(s.course)', $courses ?: ['']);
+        }
+    }
+
+    private function attendance_query(int $orgId, ?array $courses)
+    {
+        $query = $this->db->table('org_scan_records r')
+            ->join('org_events e', 'e.id=r.event_id')
+            ->join('students s', 's.id=r.student_id')
+            ->where('e.org_user_id', $orgId)
+            ->where('r.record_type', 'ATTENDANCE');
+        $this->scope_students($query, $courses);
+        return $query;
     }
 }

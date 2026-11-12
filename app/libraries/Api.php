@@ -394,7 +394,6 @@ class Api
                 '/api/admin/students/update' => 'Updated student record',
                 '/api/admin/students/delete' => 'Deleted student record',
                 '/api/admin/students/bulk-import' => 'Imported students',
-                '/api/admin/students/account-status' => 'Changed student account status',
                 '/api/admin/students/qr-status' => 'Changed student QR status',
                 '/api/admin/students/reset-code' => 'Reset student activation code',
                 '/api/org/events/create' => 'Created attendance event',
@@ -411,7 +410,8 @@ class Api
                 '/api/account/password' => 'Changed account password',
             ];
             $path = rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?? '', '/');
-            if (isset($actions[$path])) {
+            $isStudentPreview = $path === '/api/admin/students/update' && isset($data['data']['fingerprint']);
+            if (isset($actions[$path]) && !$isStudentPreview) {
                 try {
                     require_once dirname(__DIR__, 2) . '/app/models/ActivityLogModel.php';
                     $actor = $path === '/api/auth/login' ? (int) ($data['user']['id'] ?? 0) : $this->activityActorId;
