@@ -131,7 +131,7 @@ class OrgEventModel extends Model
 
     public function events(int $orgId): array
     {
-        $columns = 'e.id, e.org_user_id, e.name, e.event_type, e.violation_type_id, '
+        $columns = 'e.id, e.org_user_id, e.name, e.event_type, e.violation_type_id, e.academic_period_id, '
             . 'e.scan_starts_at, e.scan_ends_at, e.session_open, e.created_at, '
             . 'e.absence_enabled, e.attendance_finalized_at, e.absence_fine_amount, v.name, v.fine_amount';
         return $this->db->table('org_events e')
@@ -182,6 +182,7 @@ class OrgEventModel extends Model
         $end = $this->datetime($this->text($data, 'scan_ends_at'));
         CalendarDatePolicy::assertNotPastDay($start, 'Scanning start date');
         CalendarDatePolicy::assertNotPastDay($end, 'Scanning end date');
+        $academicPeriodId = $this->call->model('AcademicPeriodModel')->recording_period($data['academic_period_id'] ?? null, substr($start, 0, 10));
         if ($name === '' || mb_strlen($name) > 150 || !in_array($type, [
             'ATTENDANCE',
             'VIOLATION'
@@ -202,6 +203,7 @@ class OrgEventModel extends Model
         }
         return [
             'name' => $name,
+            'academic_period_id' => $academicPeriodId,
             'event_type' => $type,
             'violation_type_id' => $violationId,
             'scan_starts_at' => $start,
@@ -262,7 +264,8 @@ class OrgEventModel extends Model
         $params = [
             $orgId
         ];
-        $where = 'e.org_user_id = ? AND ' . $this->course_scope($orgId, 's', $params);
+        // Recorded history belongs to its original organization even after a course shift.
+        $where = 'e.org_user_id = ?';
         if (!empty($filters['event_id'])) {
             $id = $this->id($filters['event_id']);
             $this->event($orgId, $id);
@@ -284,11 +287,12 @@ class OrgEventModel extends Model
         }
         $extraNames = $kind === 'VIOLATION' ? "''" : "COALESCE((SELECT GROUP_CONCAT(x.violation_name ORDER BY x.violation_name SEPARATOR ', ') FROM org_violation_records x WHERE x.scan_record_id=r.id), '')";
         $totalFine = $kind === 'VIOLATION' ? 'r.fine_amount' : 'r.fine_amount + COALESCE((SELECT SUM(x.fine_amount) FROM org_violation_records x WHERE x.scan_record_id=r.id),0)';
-        $sql = "SELECT CONCAT('scan-',r.id) AS id, r.event_id, r.record_type, r.fine_amount, r.recorded_at,
+        $sql = "SELECT CONCAT('scan-',r.id) AS id, r.event_id, r.record_type, r.fine_amount, r.recorded_at,r.academic_period_id,COALESCE(ap.label,'Legacy / Unassigned') academic_period_label,
             s.student_number, s.full_name, s.section, s.course, s.year_level,
             e.name AS event_name, v.name AS violation_name,
             {$extraNames} AS additional_violations, {$totalFine} AS total_fine, CASE WHEN r.record_type='ATTENDANCE' THEN r.attendance_status ELSE '' END AS attendance_status
             FROM org_scan_records r JOIN org_events e ON e.id = r.event_id
+            LEFT JOIN academic_periods ap ON ap.id=r.academic_period_id
             JOIN students s ON s.id = r.student_id
             LEFT JOIN org_violation_types v ON v.id = e.violation_type_id AND v.org_user_id = e.org_user_id
             WHERE {$where}";
@@ -296,20 +300,25 @@ class OrgEventModel extends Model
             $more = [
                 $orgId
             ];
-            $extraWhere = 'x.org_user_id = ? AND ' . $this->course_scope($orgId, 's', $more);
+            $extraWhere = 'x.org_user_id = ?';
             if (!empty($filters['event_id'])) {
                 $extraWhere .= ' AND x.event_id = ?';
                 $more[] = (int) $filters['event_id'];
             }
-            $sql .= " UNION ALL SELECT CONCAT('violation-',x.id), x.event_id, 'VIOLATION', x.fine_amount, x.recorded_at,
+            $sql .= " UNION ALL SELECT CONCAT('violation-',x.id), x.event_id, 'VIOLATION', x.fine_amount, x.recorded_at,x.academic_period_id,COALESCE(ap.label,'Legacy / Unassigned'),
                 s.student_number,s.full_name,s.section,s.course,s.year_level,
                 COALESCE(e.name,'Standalone violation'),x.violation_name,'',x.fine_amount,''
                 FROM org_violation_records x JOIN students s ON s.id=x.student_id
+                LEFT JOIN academic_periods ap ON ap.id=x.academic_period_id
                 LEFT JOIN org_events e ON e.id=x.event_id WHERE {$extraWhere}";
             array_push($params,...$more);
         }
         // Apply the same filters to event-linked and standalone violations.
         $conditions = [];
+        if (isset($filters['academic_period_id']) && $filters['academic_period_id'] !== '' && $filters['academic_period_id'] !== 'all') {
+            if (!ctype_digit((string) $filters['academic_period_id'])) throw new DomainException('Invalid academic semester.', 422);
+            $conditions[] = 'COALESCE(academic_period_id,0)=?'; $params[] = (int) $filters['academic_period_id'];
+        }
         foreach (['student_number', 'section', 'year_level', 'violation_name'] as $field) {
             $value = mb_substr($this->text($filters, $field), 0, 100);
             if ($value === '') {
@@ -520,11 +529,16 @@ class OrgEventModel extends Model
 
     private function save_violations(int $orgId, int $studentId, array $types, string $now, ?int $eventId = null, ?int $scanId = null): void
     {
+        $periodId = $eventId ? ($this->event($orgId, $eventId)['academic_period_id'] ?? null)
+            : $this->call->model('AcademicPeriodModel')->recording_period(null, substr($now, 0, 10));
+        $this->call->model('AcademicPeriodModel')->require_enrolled($studentId, $periodId ? (int) $periodId : null);
         foreach ($types as $type) {
             $this->db->table('org_violation_records')
                 ->insert([
                     'org_user_id' => $orgId,
                     'student_id' => $studentId,
+                    'academic_period_id' => $periodId,
+                    'legacy_assessment' => $periodId ? 0 : 1,
                     'event_id' => $eventId,
                     'scan_record_id' => $scanId,
                     'violation_type_id' => $type['id'],
@@ -613,6 +627,7 @@ class OrgEventModel extends Model
         return $this->write($orgId, function () use ($orgId, $data) {
             // Recheck status, window, ownership and duplicates at confirmation time.
             [$event, $student, $fine, $now] = $this->scan_context($orgId, $data, true);
+            $this->call->model('AcademicPeriodModel')->require_enrolled((int) $student['id'], empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
             $types = $this->selected_types($orgId, $data);
             if ($event['event_type'] === 'VIOLATION') {
                 $types[(int) $event['violation_type_id']] = $this->violation_type($orgId, (int) $event['violation_type_id']);
@@ -628,6 +643,8 @@ class OrgEventModel extends Model
                 ->insert([
                     'event_id' => $event['id'],
                     'student_id' => $student['id'],
+                    'academic_period_id' => $event['academic_period_id'] ?? null,
+                    'legacy_assessment' => empty($event['academic_period_id']) ? 1 : 0,
                     'recorded_by' => $orgId,
                     'record_type' => $event['event_type'],
                     'fine_amount' => $fine,

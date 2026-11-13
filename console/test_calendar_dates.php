@@ -2,7 +2,16 @@
 define('PREVENT_DIRECT_ACCESS', true);
 require dirname(__DIR__) . '/app/libraries/CalendarDatePolicy.php';
 // These validation paths must reject invalid input before touching the database.
-class Model {}
+class Model {
+    public $call;
+    public function __construct() {
+        $this->call = new class {
+            public function model($name) { return new class {
+                public function recording_period($requested, $day) { return 1; }
+            }; }
+        };
+    }
+}
 require dirname(__DIR__) . '/app/models/OrgEventModel.php';
 require dirname(__DIR__) . '/app/models/PaymentPeriodModel.php';
 

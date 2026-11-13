@@ -10,6 +10,11 @@ class AttendanceModel extends Model
             $eventId
         ];
         $where = "account_status='ACTIVE' AND activation_status='ACTIVATED'";
+        $event = $this->db->table('org_events')->select('academic_period_id')->where('id', '=', $eventId)->get();
+        if (!empty($event['academic_period_id'])) {
+            $where .= " AND id IN (SELECT student_id FROM student_enrollments WHERE academic_period_id=? AND enrollment_status='ENROLLED')";
+            $params[] = $event['academic_period_id'];
+        }
         if ($org['allowed_courses'] !== null) {
             $where .= ' AND UPPER(TRIM(course)) IN (' . implode(',', array_fill(0, count($org['allowed_courses']), '?')) . ')';
             array_push($params,...$org['allowed_courses']);
@@ -39,20 +44,22 @@ class AttendanceModel extends Model
                 $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [
                     $item['org_user_id']
                 ]);
-                $event = $this->db->raw('SELECT id, org_user_id, scan_ends_at, attendance_finalized_at, absence_fine_amount FROM org_events WHERE id=? FOR UPDATE', [
+                $event = $this->db->raw('SELECT id, org_user_id, scan_ends_at, attendance_finalized_at, absence_fine_amount, academic_period_id FROM org_events WHERE id=? FOR UPDATE', [
                     $item['id']
                 ])->fetch(PDO::FETCH_ASSOC);
                 if (!$event || $event['attendance_finalized_at'] !== null || $event['scan_ends_at'] >= $now) {
                     $this->db->commit();
                     continue;
                 }
-                $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status)
-                SELECT r.event_id,r.student_id,?,'ATTENDANCE',?,?,'ABSENT' FROM org_event_roster r
+                $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status,academic_period_id,legacy_assessment)
+                SELECT r.event_id,r.student_id,?,'ATTENDANCE',?,?,'ABSENT',?,? FROM org_event_roster r
                 LEFT JOIN org_scan_records s ON s.event_id=r.event_id AND s.student_id=r.student_id
                 WHERE r.event_id=? AND s.id IS NULL", [
                     $event['org_user_id'],
                     $event['absence_fine_amount'],
                     $event['scan_ends_at'],
+                    $event['academic_period_id'],
+                    empty($event['academic_period_id']) ? 1 : 0,
                     $event['id']
                 ]);
                 $total += $insert->rowCount();

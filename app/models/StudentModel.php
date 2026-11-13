@@ -148,6 +148,11 @@ class StudentModel extends Model
                 if ($this->db->table('students')->where('id', $change['id'])->update($updates) === false) {
                     throw new RuntimeException('Student update failed.');
                 }
+                $academicChanged = false;
+                foreach (['course', 'year_level', 'section'] as $field) {
+                    if ($change['before'][$field] !== $change['after'][$field]) $academicChanged = true;
+                }
+                if ($academicChanged) $this->call->model('AcademicPeriodModel')->sync_current_enrollment((int) $change['id']);
                 if (in_array($reason, ['DEACTIVATE', 'REACTIVATE'], true) && !empty($change['before']['user_id'])) {
                     $userId = (int) $change['before']['user_id'];
                     // Incrementing the version invalidates previously issued access tokens.
@@ -175,7 +180,7 @@ class StudentModel extends Model
 
     public function matching_student_ids(array $filters, bool $requireFilter = true, ?array $selectedIds = null): array
     {
-        $keys = ['search', 'account_status', 'activation_status', 'course', 'year_level', 'section'];
+        $keys = ['search', 'account_status', 'activation_status', 'course', 'year_level', 'section', 'academic_period_id'];
         $active = [];
         foreach ($keys as $key) {
             $value = $filters[$key] ?? '';
@@ -236,7 +241,12 @@ class StudentModel extends Model
 
     private function filtered(array $filters)
     {
+        $enrolled = null;
+        if (!empty($filters['academic_period_id'])) {
+            $enrolled = $this->db->table('student_enrollments')->select('student_id')->where('academic_period_id', '=', (int) $filters['academic_period_id'])->get_all(PDO::FETCH_COLUMN);
+        }
         $query = $this->db->table('students');
+        if ($enrolled !== null) $query->in('id', $enrolled ?: [0]);
         $search = trim($filters['search'] ?? '');
         if ($search !== '') {
             $query->grouped(function ($query) use ($search) {
@@ -401,6 +411,8 @@ class StudentModel extends Model
             ->select('username,email')->where('id', (int) $student['user_id'])->get();
         $details['username'] = $account['username'] ?? null;
         $details['email'] = $account['email'] ?? null;
+        $details['current_academic_period_id'] = $student['current_academic_period_id'] ?? null;
+        $details['enrollments'] = $this->call->model('AcademicPeriodModel')->enrollments($id);
         $credentials = $this->db->table('student_qr_credentials')
             ->select('generated_at, status')->where('student_id', $id)
             ->order_by('generated_at', 'ASC')->get_all();
@@ -433,6 +445,22 @@ class StudentModel extends Model
         }
         return $this->db->table('students')
             ->insert($record) !== false;
+    }
+
+    public function find_by_number(string $number): ?array
+    {
+        return $this->db->table('students')->where('student_number', '=', $number)->get() ?: null;
+    }
+
+    public function register_with_enrollment(array $record, int $periodId, int $adminId): bool
+    {
+        $this->db->transaction();
+        try {
+            if (!$this->register_student_record($record)) throw new RuntimeException('Student registration failed.');
+            $id = (int) $this->db->last_id();
+            $this->call->model('AcademicPeriodModel')->enroll($id, $record + ['academic_period_id' => $periodId, 'mode' => 'ENROLL', 'make_current' => true], $adminId);
+            $this->db->commit(); return true;
+        } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
     }
 
     public function delete_pending_student(int $id): bool

@@ -156,7 +156,7 @@ class StudentPortalModel extends StudentAccountModel
         }
         if ($kind === 'ATTENDANCE') {
             $base = "SELECT CONCAT('scan-',r.id) id,e.name event_name,u.id org_user_id,u.organization_name,r.recorded_at,r.attendance_status,
-                '' violation_name,r.fine_amount,COALESCE(p.paid_amount,0) paid_amount,GREATEST(0,r.fine_amount-COALESCE(p.paid_amount,0)) outstanding
+                '' violation_name,r.fine_amount,COALESCE(p.paid_amount,0) paid_amount,GREATEST(0,r.fine_amount-COALESCE(p.paid_amount,0)) outstanding,r.academic_period_id
                 FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
                 LEFT JOIN (SELECT fine_key,SUM(amount) paid_amount FROM (" . $allocations . ") allocated WHERE student_id=? AND status='CONFIRMED' GROUP BY fine_key) p ON p.fine_key=CONCAT('scan-',r.id)
                 WHERE r.student_id=? AND r.record_type='ATTENDANCE'";
@@ -166,10 +166,10 @@ class StudentPortalModel extends StudentAccountModel
             ];
         } else {
             $base = "SELECT f.*,COALESCE(p.paid_amount,0) paid_amount,GREATEST(0,f.fine_amount-COALESCE(p.paid_amount,0)) outstanding FROM (
-                SELECT CONCAT('scan-',r.id) id,e.name event_name,u.id org_user_id,u.organization_name,r.recorded_at,'' attendance_status,v.name violation_name,r.fine_amount
+                SELECT CONCAT('scan-',r.id) id,e.name event_name,u.id org_user_id,u.organization_name,r.recorded_at,'' attendance_status,v.name violation_name,r.fine_amount,r.academic_period_id
                 FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
                 LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE r.student_id=? AND r.record_type='VIOLATION'
-                UNION ALL SELECT CONCAT('violation-',r.id),COALESCE(e.name,'Standalone violation'),u.id,u.organization_name,r.recorded_at,'',r.violation_name,r.fine_amount
+                UNION ALL SELECT CONCAT('violation-',r.id),COALESCE(e.name,'Standalone violation'),u.id,u.organization_name,r.recorded_at,'',r.violation_name,r.fine_amount,r.academic_period_id
                 FROM org_violation_records r JOIN users u ON u.id=r.org_user_id LEFT JOIN org_events e ON e.id=r.event_id WHERE r.student_id=?
                 ) f LEFT JOIN (SELECT fine_key,SUM(amount) paid_amount FROM (" . $allocations . ") allocated WHERE student_id=? AND status='CONFIRMED' GROUP BY fine_key) p ON p.fine_key=f.id";
             $params = [
@@ -179,6 +179,10 @@ class StudentPortalModel extends StudentAccountModel
             ];
         }
         $where = [];
+        if (isset($filters['academic_period_id']) && $filters['academic_period_id'] !== '' && $filters['academic_period_id'] !== 'all') {
+            if (!ctype_digit((string) $filters['academic_period_id'])) throw new DomainException('Invalid academic period.', 422);
+            $where[] = 'COALESCE(academic_period_id,0)=?'; $params[] = (int) $filters['academic_period_id'];
+        }
         $search = $filters['search'] ?? '';
         if (!is_string($search)) {
             throw new DomainException('Invalid search.', 422);
@@ -261,6 +265,7 @@ class StudentPortalModel extends StudentAccountModel
         return [
             'data' => $this->filter_organization($this->adjusted_history($userId, $sql, $params), $filters),
             'columns' => [
+                'academic_period_label' => 'Academic Semester',
                 'event_name' => 'Event',
                 'organization_name' => 'Organization',
                 'recorded_at' => 'Recorded At',
@@ -280,7 +285,9 @@ class StudentPortalModel extends StudentAccountModel
         $rows = $this->db->raw($sql . ' ORDER BY recorded_at DESC,id DESC', $params)->fetchAll(PDO::FETCH_ASSOC);
         $student = $this->own($userId);
         $fines = array_column($this->call->model('PaymentModel')->fines((int) $student['id']), null, 'fine_key');
+        $periods = array_column($this->call->model('AcademicPeriodModel')->periods(), null, 'id');
         foreach ($rows as &$row) {
+            $row['academic_period_label'] = $periods[$row['academic_period_id'] ?? 0]['label'] ?? 'Legacy / Unassigned';
             $fine = $fines[$row['id']] ?? null;
             $row['cap_adjustment'] = $fine['cap_adjustment'] ?? '0.00';
             $row['discount_amount'] = $fine['discount_amount'] ?? '0.00';

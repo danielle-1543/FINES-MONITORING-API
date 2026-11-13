@@ -21,7 +21,7 @@ class XenditPaymentModel extends Model
             ->join('students s', 's.id=p.student_id');
     }
 
-    public function checkout(int $userId, int $orgId): array
+    public function checkout(int $userId, int $orgId, array $selection = []): array
     {
         $gateway = $this->gateway();
         $gateway->assert_configured();
@@ -32,7 +32,7 @@ class XenditPaymentModel extends Model
         $reference = 'fms-test-' . bin2hex(random_bytes(16));
         // This reserves the server-calculated amount and its fine allocations
         // atomically. Concurrent/double clicks cannot reserve it a second time.
-        $claimId = $this->call->model('PaymentModel')->submit($userId, [
+        $claimId = $this->call->model('PaymentModel')->submit($userId, array_intersect_key($selection, array_flip(['academic_period_id', 'amount'])) + [
             'fine_key' => 'ALL', 'organization_id' => $orgId,
         ], null, $reference);
         $attempt = $this->query()->where('x.claim_id', '=', $claimId)->get();

@@ -32,8 +32,10 @@ class PaymentPeriodModel extends Model
     {
         $opens = $this->date_value($input['opens_at'] ?? null, true);
         $closes = $this->date_value($input['closes_at'] ?? null, true);
+        $academic = null;
         CalendarDatePolicy::assertNotPastDay($opens, 'Payment opening date');
         CalendarDatePolicy::assertNotPastDay($closes, 'Payment closing date');
+        if (empty($input['id'])) $academic = $this->call->model('AcademicPeriodModel')->period((int) ($input['academic_period_id'] ?? 0), true);
         if ($opens >= $closes) {
             throw new DomainException('Payment closing time must be after opening time.', 422);
         }
@@ -56,19 +58,15 @@ class PaymentPeriodModel extends Model
                         'closes_at' => $closes,
                     ]);
             } else {
-                $label = is_string($input['label'] ?? null) ? trim($input['label']) : '';
+                if ($this->db->table('organization_payment_periods')->where('org_user_id', '=', $orgId)
+                    ->where('academic_period_id', '=', $academic['id'])->count()) throw new DomainException('This organization already has a schedule for this academic semester. Edit its payment window instead.', 409);
+                $label = $academic['label'];
                 if ($label === '' || mb_strlen($label) > 100) {
                     throw new DomainException('Enter a semester name of up to 100 characters.', 422);
                 }
                 // Preserve earlier coverage; new schedules automatically cover subsequent fines.
-                $start = '1000-01-01';
-                foreach ($existing as $period) {
-                    $next = (new DateTimeImmutable($period['semester_end']))
-                        ->modify('+1 day')
-                        ->format('Y-m-d');
-                    $start = max($start, $next);
-                }
-                $end = substr($closes, 0, 10);
+                $start = $academic['starts_on'] ?: '1000-01-01';
+                $end = $academic['ends_on'] ?: '9999-12-31';
                 if ($start > $end) {
                     throw new DomainException('Choose a closing date after the previous schedule’s coverage, or edit its payment window.', 409);
                 }
@@ -99,6 +97,7 @@ class PaymentPeriodModel extends Model
                     foreach (array_unique($studentIds ?: []) as $studentId) {
                         $reserved = 0;
                         foreach ($payments->fines((int) $studentId) as $fine) {
+                            if (!empty($fine['legacy_assessment']) || (int) ($fine['academic_period_id'] ?? 0) !== (int) $academic['id']) continue;
                             $day = substr($fine['recorded_at'], 0, 10);
                             if ((int) $fine['org_user_id'] === $orgId && $day >= $start && $day <= $end) {
                                 $reserved += (int) round((float) $fine['paid_amount'] * 100);
@@ -114,6 +113,7 @@ class PaymentPeriodModel extends Model
                 $this->db->table('organization_payment_periods')
                     ->insert([
                         'org_user_id' => $orgId,
+                        'academic_period_id' => $academic['id'],
                         'label' => $label,
                         'semester_start' => $start,
                         'semester_end' => $end,
@@ -133,7 +133,13 @@ class PaymentPeriodModel extends Model
     {
         $rows = $this->call->model('StudentVoucherModel')->attach($rows);
         $now = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
-        return self::calculate($rows, $this->periods(), $now->format('Y-m-d H:i:s'));
+        $rows = self::calculate($rows, $this->periods(), $now->format('Y-m-d H:i:s'));
+        $periods = array_column($this->call->model('AcademicPeriodModel')->periods(), null, 'id');
+        foreach ($rows as &$row) {
+            $row['academic_period_label'] = $periods[$row['academic_period_id'] ?? 0]['label'] ?? 'Legacy / Unassigned';
+        }
+        unset($row);
+        return $rows;
     }
 
     public static function calculate(array $rows, array $periods, string $now): array
@@ -150,6 +156,11 @@ class PaymentPeriodModel extends Model
             $row['cap_adjustment'] = '0.00';
             $day = substr($row['recorded_at'], 0, 10);
             foreach ($periods as $period) {
+                // Old assessments retain their original schedule/cap rules even
+                // when an administrator later classifies their archive semester.
+                $legacy = !empty($row['legacy_assessment']) || !array_key_exists('legacy_assessment', $row);
+                if ($legacy && !empty($period['academic_period_id'])) continue;
+                if (!$legacy && (empty($row['academic_period_id']) || (int) ($period['academic_period_id'] ?? 0) !== (int) $row['academic_period_id'])) continue;
                 if ((int) $period['org_user_id'] !== (int) $row['org_user_id']
                     || $day < $period['semester_start']
                     || $day > $period['semester_end']) {

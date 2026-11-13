@@ -68,6 +68,7 @@ function fixture(): array {
     $pdo->exec("CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,status TEXT,organization_name TEXT); INSERT INTO users VALUES(1,'STUDENT','ACTIVE',NULL),(10,'ORGANIZATION','ACTIVE','CCS'),(20,'ORGANIZATION','ACTIVE','USG'),(30,'ORGANIZATION','ACTIVE','Business'),(40,'ORGANIZATION','INACTIVE','Inactive');
         CREATE TABLE students(id INTEGER PRIMARY KEY,user_id INTEGER,course TEXT,account_status TEXT,activation_status TEXT,full_name TEXT,student_number TEXT); INSERT INTO students VALUES(2,1,'BSIT','ACTIVE','ACTIVATED','Demo Student','DEMO-1');
         CREATE TABLE payment_claims(id INTEGER PRIMARY KEY AUTOINCREMENT,student_id INTEGER,org_user_id INTEGER,fine_key TEXT,amount TEXT,method TEXT,reference_number TEXT,proof_file TEXT,proof_mime TEXT,submitted_at TEXT,status TEXT,reviewed_at TEXT,review_note TEXT,reviewed_by INTEGER,receipt_number TEXT UNIQUE);
+        ALTER TABLE payment_claims ADD academic_period_id INTEGER;
         CREATE TABLE payment_claim_items(claim_id INTEGER,fine_key TEXT,amount TEXT,PRIMARY KEY(claim_id,fine_key));
         CREATE TABLE xendit_payments(claim_id INTEGER PRIMARY KEY,reference_id TEXT UNIQUE,session_id TEXT UNIQUE,payment_id TEXT UNIQUE,checkout_url TEXT,state TEXT,mode TEXT,created_at TEXT,updated_at TEXT);");
     $db = (new ReflectionClass(FixtureDatabase::class))->newInstanceWithoutConstructor();
@@ -78,6 +79,10 @@ function fixture(): array {
     $call = new class($payments, $gateway) {
         public function __construct(public $payments, public $gateway) {}
         public function model($name) {
+            if ($name === 'AcademicPeriodModel') return new class {
+                public function periods() { return []; }
+                public function current() { return null; }
+            };
             if ($name === 'PaymentModel') return $this->payments;
             if ($name === 'PaymentPeriodModel') return new class {
                 public function periods($id) { return [['id' => $id, 'label' => 'Demo', 'opens_at' => '2000-01-01 00:00:00', 'closes_at' => '2099-01-01 00:00:00']]; }

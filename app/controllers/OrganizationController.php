@@ -134,6 +134,7 @@ class OrganizationController extends Controller
         $this->run('GET', function ($id) {
             $rows = $this->OrgEventModel->export_records($id, $_GET);
             return $this->export_data($rows, [
+                'academic_period_label' => 'Academic Semester',
                 'course' => 'Course',
                 'year_level' => 'Year Level',
                 'section' => 'Section',

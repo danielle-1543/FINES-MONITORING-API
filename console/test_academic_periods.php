@@ -1,0 +1,106 @@
+<?php
+// Reuse the isolated SQLite/LavaLust Query Builder harness. Never loads .env.
+require __DIR__ . '/test_xendit.php';
+require dirname(__DIR__) . '/app/models/AcademicPeriodModel.php';
+require dirname(__DIR__) . '/app/models/FineArchiveModel.php';
+require dirname(__DIR__) . '/app/models/NotificationModel.php';
+require dirname(__DIR__) . '/app/models/AttendanceModel.php';
+[$pdo, $unused, $gateway] = fixture();
+$pdo->sqliteCreateFunction('CONCAT', fn (...$parts) => implode('', $parts));
+$pdo->exec("ALTER TABLE students ADD year_level TEXT; ALTER TABLE students ADD section TEXT;
+    ALTER TABLE students ADD qr_token TEXT DEFAULT 'unchanged-qr'; ALTER TABLE students ADD current_academic_period_id INTEGER;
+    CREATE TABLE academic_periods(id INTEGER PRIMARY KEY AUTOINCREMENT,year_start INTEGER,term TEXT,label TEXT,starts_on TEXT,ends_on TEXT,status TEXT,is_current INTEGER,UNIQUE(year_start,term));
+    CREATE TABLE student_enrollments(id INTEGER PRIMARY KEY AUTOINCREMENT,student_id INTEGER,academic_period_id INTEGER,course TEXT,year_level TEXT,section TEXT,enrollment_status TEXT,created_at TEXT,updated_at TEXT,UNIQUE(student_id,academic_period_id));
+    CREATE TABLE student_change_history(id INTEGER PRIMARY KEY,student_id INTEGER,changed_by INTEGER,batch_id TEXT,reason TEXT,note TEXT,before_values TEXT,after_values TEXT,changed_at TEXT);
+    CREATE TABLE academic_record_changes(id INTEGER PRIMARY KEY,changed_by INTEGER,academic_period_id INTEGER,source_kind TEXT,source_id INTEGER,change_details TEXT,changed_at TEXT);
+    CREATE TABLE org_events(id INTEGER PRIMARY KEY,org_user_id INTEGER,name TEXT,violation_type_id INTEGER,scan_ends_at TEXT,academic_period_id INTEGER);
+    CREATE TABLE org_violation_types(id INTEGER PRIMARY KEY,name TEXT);
+    CREATE TABLE org_scan_records(id INTEGER PRIMARY KEY,student_id INTEGER,event_id INTEGER,record_type TEXT,fine_amount TEXT,recorded_at TEXT,academic_period_id INTEGER,legacy_assessment INTEGER);
+    ALTER TABLE org_scan_records ADD attendance_status TEXT DEFAULT 'ABSENT';
+    CREATE TABLE student_notifications(id INTEGER PRIMARY KEY,user_id INTEGER,source_key TEXT UNIQUE,title TEXT,message TEXT,kind TEXT,recorded_at TEXT,created_at TEXT,push_next_attempt_at TEXT,push_idempotency_key TEXT);
+    CREATE TABLE org_violation_records(id INTEGER PRIMARY KEY,student_id INTEGER,event_id INTEGER,org_user_id INTEGER,violation_name TEXT,fine_amount TEXT,recorded_at TEXT,academic_period_id INTEGER,legacy_assessment INTEGER);
+    CREATE TABLE organization_payment_periods(id INTEGER PRIMARY KEY,org_user_id INTEGER,academic_period_id INTEGER,label TEXT,semester_start TEXT,semester_end TEXT,opens_at TEXT,closes_at TEXT,cap_amount TEXT);
+    INSERT INTO users VALUES(99,'ADMIN','ACTIVE',NULL);
+    INSERT INTO org_events VALUES(1,10,'Old Event',NULL,'2020-01-01 10:00:00',NULL);
+    INSERT INTO org_scan_records VALUES(1,2,1,'ATTENDANCE','90.00','2020-01-01 10:00:00',NULL,1,'ABSENT');
+    INSERT INTO organization_payment_periods VALUES(1,10,NULL,'Legacy cap','2000-01-01','2025-12-31','2000-01-01','2099-01-01','50.00');");
+$academic = new AcademicPeriodModel(); $payments = new PaymentModel(); $schedule = new PaymentPeriodModel();
+$orgFixture = $GLOBALS['xenditTestLava']->call;
+$GLOBALS['xenditTestLava']->call = new class($academic, $payments, $schedule, $orgFixture) {
+    public function __construct(public $academic, public $payments, public $schedule, public $fallback) {}
+    public function model($name) {
+        if ($name === 'AcademicPeriodModel') return $this->academic;
+        if ($name === 'PaymentModel') return $this->payments;
+        if ($name === 'PaymentPeriodModel') return $this->schedule;
+        if ($name === 'StudentModel') return new class { public function programs() { return ['BSIT' => [], 'BSCS' => []]; } };
+        if ($name === 'StudentVoucherModel') return new class { public function attach($rows) { return $rows; } };
+        return $this->fallback->model($name);
+    }
+};
+$first = $academic->save(['year_start' => 2026, 'term' => 'FIRST', 'is_current' => true])['id'];
+check($academic->current()['starts_on'] === null && $academic->current()['ends_on'] === null, 'semester setup requires no date fields');
+denied(fn () => $academic->save(['year_start' => 2026, 'term' => 'FIRST']), 409, 'duplicate semesters rejected');
+$enrollment = ['academic_period_id' => $first, 'course' => 'BSIT', 'year_level' => '1st Year', 'section' => 'F1', 'make_current' => true];
+$academic->enroll(2, $enrollment, 99);
+$notifications = new NotificationModel(); $notifications->record_scan(1);
+$originalNotification = $pdo->query('SELECT * FROM student_notifications')->fetch();
+denied(fn () => $academic->enroll(2, $enrollment, 99), 409, 'duplicate enrollment cannot duplicate student account');
+$preview = $academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => true], 99);
+denied(fn () => $academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => false, 'fingerprint' => 'stale'], 99), 409, 'legacy classification requires matching preview');
+$academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => false, 'fingerprint' => $preview['fingerprint']], 99);
+$notifications->record_scan(1);
+check($pdo->query('SELECT * FROM student_notifications')->fetch() === $originalNotification && (int) $pdo->query('SELECT COUNT(*) FROM student_notifications')->fetchColumn() === 1, 'legacy classification preserves notification ID and push idempotency without duplicates');
+$old = $payments->fines(2)[0];
+check($old['payable_amount'] === '50.00' && (int) $old['legacy_assessment'] === 1, 'classifying a legacy fine preserves its original cap');
+$second = $academic->save(['year_start' => 2026, 'term' => 'SECOND', 'is_current' => true])['id'];
+$academic->enroll(2, array_replace($enrollment, ['academic_period_id' => $second, 'year_level' => '2nd Year', 'section' => 'F2']), 99);
+$student = $pdo->query('SELECT * FROM students WHERE id=2')->fetch();
+check($student['qr_token'] === 'unchanged-qr' && $student['user_id'] == 1 && $student['year_level'] === '2nd Year', 'rollover updates profile while preserving account and QR');
+$history = array_column($academic->enrollments(2), null, 'academic_period_id');
+check($history[$first]['year_level'] === '1st Year' && $history[$second]['year_level'] === '2nd Year', 'enrollment snapshots preserve previous year level');
+check((int) $pdo->query('SELECT academic_period_id FROM org_scan_records WHERE id=1')->fetchColumn() === $first, 'current semester change never relabels previous fine');
+$academic->enroll(2, array_replace($enrollment, ['mode' => 'CORRECT', 'section' => 'F3', 'make_current' => false]), 99);
+check($pdo->query('SELECT section FROM students WHERE id=2')->fetchColumn() === 'F2', 'correcting an older enrollment does not change current profile');
+$pdo->exec("INSERT INTO org_events VALUES(2,10,'New Event',NULL,'2026-12-01 10:00:00',$second);
+    INSERT INTO org_scan_records VALUES(2,2,2,'ATTENDANCE','80.00','2026-11-14 10:00:00',$second,0,'ABSENT');
+    INSERT INTO organization_payment_periods VALUES(2,10,$second,'Second cap','1000-01-01','9999-12-31','2000-01-01','2099-01-01','60.00');");
+$rows = array_column($payments->fines(2), null, 'fine_key');
+check($rows['scan-1']['payable_amount'] === '50.00' && $rows['scan-2']['payable_amount'] === '60.00', 'new semester cap is separate from legacy assessed fines');
+$notifications->record_scan(2); $notifications->record_scan(2);
+check((int) $pdo->query("SELECT COUNT(*) FROM student_notifications WHERE source_key='scan:2'")->fetchColumn() === 1, 'new semester fines still generate one notification');
+$claim = $payments->submit(1, ['fine_key' => 'ALL', 'method' => 'CASH', 'organization_id' => 10, 'academic_period_id' => $second, 'amount' => '25.00']);
+check($pdo->query("SELECT fine_key FROM payment_claim_items WHERE claim_id=$claim")->fetchColumn() === 'scan-2', 'partial payment allocates only to selected semester');
+$pdo->exec("UPDATE payment_claims SET status='CONFIRMED' WHERE id=$claim");
+$rows = array_column($payments->fines(2), null, 'fine_key');
+check($rows['scan-2']['outstanding'] === '35.00' && $rows['scan-1']['outstanding'] === '50.00', 'confirmed partial payment leaves exact semester balance');
+$next = $payments->submit(1, ['fine_key' => 'ALL', 'method' => 'CASH', 'organization_id' => 10, 'academic_period_id' => $second, 'amount' => '35.00']);
+$pdo->exec("UPDATE payment_claims SET status='CONFIRMED' WHERE id=$next");
+check(array_column($payments->fines(2), null, 'fine_key')['scan-2']['outstanding'] === '0.00', 'full settlement makes capped semester balance zero');
+denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'organization_id' => 10, 'amount' => '0'], null, 'zero-check'), 422, 'zero Xendit amount cannot silently become full balance');
+$archive = new FineArchiveModel();
+$report = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['academic_period_id' => (string) $second]);
+check(count($report['fines']) === 1 && $report['fines'][0]['settlement_status'] === 'PAID' && count($report['payments']) === 2, 'archives retain paid fine with both partial-payment allocations');
+check($report['fines'][0]['enrollment_year_level'] === '2nd Year', 'archive uses semester enrollment details');
+check(!$archive->report(['role' => 'ORGANIZATION', 'sub' => 20], [])['fines'], 'organization cannot read another organization archives');
+$pdo->exec("ALTER TABLE org_events ADD event_type TEXT; ALTER TABLE org_events ADD absence_enabled INTEGER DEFAULT 0;
+    ALTER TABLE org_events ADD attendance_finalized_at TEXT; ALTER TABLE org_events ADD absence_fine_amount TEXT;
+    ALTER TABLE org_scan_records ADD recorded_by INTEGER;
+    CREATE TABLE org_event_roster(event_id INTEGER,student_id INTEGER,PRIMARY KEY(event_id,student_id));
+    INSERT INTO org_events(id,org_user_id,name,scan_ends_at,academic_period_id,event_type,absence_enabled,absence_fine_amount)
+        VALUES(3,10,'Ended semester event','2020-01-02 10:00:00',$first,'ATTENDANCE',1,'15.00');
+    INSERT INTO org_event_roster VALUES(3,2);");
+$previousCall = $GLOBALS['xenditTestLava']->call;
+$GLOBALS['xenditTestLava']->call = new class($previousCall) {
+    public function __construct(public $previous) {}
+    public function model($name) { return $name === 'NotificationModel' ? new NotificationModel() : $this->previous->model($name); }
+};
+$attendance = new AttendanceModel();
+check($attendance->finalize(10) === 1 && $attendance->finalize(10) === 0, 'absence finalization remains idempotent with semester columns');
+$absence = $pdo->query('SELECT * FROM org_scan_records WHERE event_id=3')->fetch();
+check((int) $absence['academic_period_id'] === $first && (int) $absence['legacy_assessment'] === 0
+    && (int) $pdo->query("SELECT COUNT(*) FROM student_notifications WHERE source_key='scan:" . $absence['id'] . "'")->fetchColumn() === 1,
+    'automatic absence inherits event semester and still queues one notification');
+$academic->save(['id' => $first, 'year_start' => 2026, 'term' => 'FIRST', 'status' => 'CLOSED']);
+denied(fn () => $academic->recording_period($first, '2026-11-14'), 409, 'closed semester rejects new recording');
+check((int) $academic->current()['id'] === $second, 'closing older semester leaves current selection intact');
+echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

@@ -56,27 +56,32 @@ class PaymentModel extends Model
 
     public function fines(int $studentId): array
     {
+        return $this->fine_rows([$studentId]);
+    }
+
+    public function fine_rows(array $studentIds): array
+    {
+        $studentIds = array_values(array_unique(array_map('intval', $studentIds)));
+        if (!$studentIds) return [];
+        if (count($studentIds) > 2000 || min($studentIds) < 1) throw new DomainException('Narrow the student selection to at most 2,000 records.', 422);
+        $marks = implode(',', array_fill(0, count($studentIds), '?'));
         // UNION combines attendance and standalone violations; the derived table totals allocations.
         // The installed builder has no UNION/subquery builder, so values remain bound here.
-        $sql = "SELECT CONCAT('scan-',r.id) fine_key,e.org_user_id,CASE WHEN r.record_type='ATTENDANCE' THEN 'Attendance fine' ELSE v.name END violation_name,e.name event_name,r.fine_amount,r.recorded_at,u.organization_name,r.record_type
+        $sql = "SELECT CONCAT('scan-',r.id) fine_key,e.org_user_id,CASE WHEN r.record_type='ATTENDANCE' THEN 'Attendance fine' ELSE v.name END violation_name,e.name event_name,r.fine_amount,r.recorded_at,u.organization_name,r.record_type,r.student_id,r.academic_period_id,r.legacy_assessment
             FROM org_scan_records r JOIN org_events e ON e.id=r.event_id JOIN users u ON u.id=e.org_user_id
-            LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE r.student_id=? AND (r.record_type='VIOLATION' OR r.fine_amount>0)
-            UNION ALL SELECT CONCAT('violation-',r.id),r.org_user_id,r.violation_name,COALESCE(e.name,'Standalone violation'),r.fine_amount,r.recorded_at,u.organization_name,'VIOLATION'
-            FROM org_violation_records r JOIN users u ON u.id=r.org_user_id LEFT JOIN org_events e ON e.id=r.event_id WHERE r.student_id=?";
+            LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE r.student_id IN ($marks) AND (r.record_type='VIOLATION' OR r.fine_amount>0)
+            UNION ALL SELECT CONCAT('violation-',r.id),r.org_user_id,r.violation_name,COALESCE(e.name,'Standalone violation'),r.fine_amount,r.recorded_at,u.organization_name,'VIOLATION',r.student_id,r.academic_period_id,r.legacy_assessment
+            FROM org_violation_records r JOIN users u ON u.id=r.org_user_id LEFT JOIN org_events e ON e.id=r.event_id WHERE r.student_id IN ($marks)";
         $rows = $this->db->raw('SELECT f.*,COALESCE(p.paid,0) paid_amount,COALESCE(p.pending,0) pending_amount FROM (' . $sql . ") f LEFT JOIN
             (SELECT fine_key,SUM(CASE WHEN status='CONFIRMED' THEN amount ELSE 0 END) paid,SUM(CASE WHEN status='PENDING' THEN amount ELSE 0 END) pending
-            FROM (" . $this->allocated_payments() . ") allocated WHERE student_id=? GROUP BY fine_key) p ON p.fine_key=f.fine_key ORDER BY f.recorded_at DESC,f.fine_key", [
-            $studentId,
-            $studentId,
-            $studentId
-        ])->fetchAll(PDO::FETCH_ASSOC);
+            FROM (" . $this->allocated_payments() . ") allocated WHERE student_id IN ($marks) GROUP BY fine_key) p ON p.fine_key=f.fine_key ORDER BY f.recorded_at DESC,f.fine_key", array_merge($studentIds, $studentIds, $studentIds))->fetchAll(PDO::FETCH_ASSOC);
         return $this->call->model('PaymentPeriodModel')->apply($rows);
     }
 
     private function claims(string $ownerColumn, int $ownerId): array
     {
         $columns = 'p.id, p.student_id, p.org_user_id, p.fine_key, p.amount, p.method, '
-            . 'p.reference_number, p.status, p.submitted_at, p.reviewed_at, p.review_note, '
+            . 'p.reference_number, p.academic_period_id, p.status, p.submitted_at, p.reviewed_at, p.review_note, '
             . 'p.receipt_number, p.proof_file, s.full_name, s.student_number, u.organization_name';
         $rows = $this->db->table('payment_claims p')
             ->select($columns)
@@ -114,6 +119,8 @@ class PaymentModel extends Model
             'fines' => $fines,
             'claims' => $this->claims('p.student_id', (int) $student['id']),
             'organizations' => $this->student_payment_organizations($student),
+            'academic_periods' => $this->call->model('AcademicPeriodModel')->periods(),
+            'current_academic_period_id' => $this->call->model('AcademicPeriodModel')->current()['id'] ?? 0,
             'summary' => [
                 'total_fines' => $this->decimal($total),
                 'paid_amount' => $this->decimal($paid),
@@ -163,9 +170,11 @@ class PaymentModel extends Model
 
     public function submit(int $userId, array $data, ?array $proof = null, ?string $xenditReference = null): int
     {
+        $periodSelection = array_key_exists('academic_period_id', $data) ? filter_var($data['academic_period_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]) : null;
+        if ($periodSelection === false) throw new DomainException('Choose a valid academic semester.', 422);
         $key = $data['fine_key'] ?? '';
         if ($key !== 'ALL') {
-            throw new DomainException('Pay the full payable balance for an organization.', 422);
+            throw new DomainException('Choose an organization and semester to pay.', 422);
         }
         $method = $xenditReference !== null ? 'XENDIT_TEST' : ($data['method'] ?? '');
         $reference = trim(is_string($data['reference_number'] ?? '') ? ($data['reference_number'] ?? '') : '');
@@ -175,8 +184,9 @@ class PaymentModel extends Model
         ], true))) {
             throw new DomainException('Select a fine and Cash or GCash.', 422);
         }
-        $amount = $xenditReference !== null ? 0 : $this->cents($data['amount'] ?? null);
-        if ($xenditReference === null && $amount <= 0) {
+        $automaticAmount = $xenditReference !== null && !array_key_exists('amount', $data);
+        $amount = $automaticAmount ? 0 : $this->cents($data['amount'] ?? null);
+        if (!$automaticAmount && $amount <= 0) {
             throw new DomainException('Amount must be greater than zero.', 422);
         }
         if (strlen($reference) > 100 || ($method === 'GCASH' && !preg_match('/^[A-Za-z0-9-]{6,100}$/', $reference))) {
@@ -218,6 +228,7 @@ class PaymentModel extends Model
                     if ((int) $candidate['org_user_id'] !== $orgId || $candidate['payment_window'] !== 'OPEN') {
                         continue;
                     }
+                    if ($periodSelection !== null && (int) ($candidate['academic_period_id'] ?? 0) !== $periodSelection) continue;
                     $available = $this->cents($candidate['available_to_claim']);
                     if ($available > 0) {
                         $items[$candidate['fine_key']] = $candidate['available_to_claim'];
@@ -227,10 +238,20 @@ class PaymentModel extends Model
                 if (!$items) {
                     throw new DomainException('No fines are available for payment to this organization.', 409);
                 }
-                if ($xenditReference !== null) $amount = $total;
-                if ($amount !== $total) {
-                    throw new DomainException('The payable total changed. Refresh and submit the updated total.', 409);
+                if ($xenditReference !== null && $amount === 0) $amount = $total;
+                if ($amount > $total) {
+                    throw new DomainException('Payment exceeds the available balance for the selected semester. Refresh and check the amount.', 409);
                 }
+                // Deterministic partial allocation: the ledger returns newest
+                // first, so allocate oldest eligible fines first.
+                $remaining = $amount;
+                $allocatedItems = [];
+                foreach (array_reverse($items, true) as $fineKey => $available) {
+                    $part = min($remaining, $this->cents($available));
+                    if ($part > 0) $allocatedItems[$fineKey] = $this->decimal($part);
+                    $remaining -= $part;
+                }
+                $items = $allocatedItems;
                 $fine = [
                     'org_user_id' => $orgId
                 ];
@@ -265,6 +286,7 @@ class PaymentModel extends Model
                 throw new DomainException('This reference already has a pending or confirmed claim.', 409);
             }
             $claimId = (int) $this->db->last_id();
+            if ($periodSelection) $this->db->table('payment_claims')->where('id', '=', $claimId)->update(['academic_period_id' => $periodSelection]);
             foreach ($items as $fineKey => $allocation) {
                 $this->db->table('payment_claim_items')
                     ->insert([
@@ -592,7 +614,7 @@ class PaymentModel extends Model
     public function document(int $userId, string $role, int $claimId, bool $receipt = false): array
     {
         $claim = $this->db->table('payment_claims p')
-            ->select('p.id,p.student_id,p.org_user_id,p.fine_key,p.amount,p.method,p.reference_number,p.status,p.submitted_at,p.reviewed_at,p.reviewed_by,p.review_note,p.receipt_number,p.proof_file,p.proof_mime,s.full_name,s.student_number,s.course,u.organization_name')
+            ->select('p.id,p.student_id,p.org_user_id,p.fine_key,p.amount,p.method,p.reference_number,p.academic_period_id,p.status,p.submitted_at,p.reviewed_at,p.reviewed_by,p.review_note,p.receipt_number,p.proof_file,p.proof_mime,s.full_name,s.student_number,s.course,u.organization_name')
             ->join('students s', 's.id=p.student_id')
             ->join('users u', 'u.id=p.org_user_id')
             ->where('p.id', $claimId)
@@ -621,6 +643,7 @@ class PaymentModel extends Model
         if ($count) {
             $claim['fine_key'] = 'All fines (' . $count . ' items)';
         }
+        $claim['academic_period_label'] = !empty($claim['academic_period_id']) ? $this->call->model('AcademicPeriodModel')->period((int) $claim['academic_period_id'])['label'] : 'Legacy / Mixed allocation';
         return $claim;
     }
 }

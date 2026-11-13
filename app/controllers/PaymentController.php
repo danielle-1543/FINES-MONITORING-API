@@ -83,7 +83,7 @@ class PaymentController extends Controller
     {
         $this->run('POST', function ($id, $data) {
             $this->api->rate_limit('xendit-checkout:' . $id, 10, 600);
-            return ['data' => $this->call->model('XenditPaymentModel')->checkout($id, $this->id($data['organization_id'] ?? null))];
+            return ['data' => $this->call->model('XenditPaymentModel')->checkout($id, $this->id($data['organization_id'] ?? null), $data)];
         }, 'STUDENT');
     }
 
