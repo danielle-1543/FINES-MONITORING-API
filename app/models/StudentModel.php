@@ -314,7 +314,7 @@ class StudentModel extends Model
             'oldest' => 'registered_at ASC, id ASC',
             'activated_recent' => 'activated_at DESC, id DESC',
         ];
-        $columns = 'id,user_id,student_number,full_name,section,course,year_level,account_status,departure_reason,activation_status,qr_token_status,qr_token_generated_at,activation_code_expires_at,registered_at,activated_at,updated_at';
+        $columns = 'id,user_id,student_number,full_name,section,course,year_level,current_academic_period_id,account_status,departure_reason,activation_status,qr_token_status,qr_token_generated_at,activation_code_expires_at,registered_at,activated_at,updated_at';
         if ($forExport) {
             $columns .= ',qr_token,activation_code';
         }
@@ -324,9 +324,14 @@ class StudentModel extends Model
             [$field, $direction] = explode(' ', trim($order));
             $query->order_by($field, $direction);
         }
+        $students = $query->limit($perPage, ($page - 1) * $perPage)->get_all();
+        $periodLabels = array_column($this->db->table('academic_periods')->select('id,label')->get_all(), 'label', 'id');
+        foreach ($students as &$student) {
+            $student['academic_period_label'] = $periodLabels[$student['current_academic_period_id'] ?? 0] ?? 'Not assigned';
+        }
+        unset($student);
         return [
-            'students' => $query->limit($perPage, ($page - 1) * $perPage)
-                ->get_all(),
+            'students' => $students,
             'pagination' => [
                 'current_page' => $page,
                 'per_page' => $perPage,
@@ -412,6 +417,8 @@ class StudentModel extends Model
         $details['username'] = $account['username'] ?? null;
         $details['email'] = $account['email'] ?? null;
         $details['current_academic_period_id'] = $student['current_academic_period_id'] ?? null;
+        $period = empty($details['current_academic_period_id']) ? null : $this->db->table('academic_periods')->select('label')->where('id', $details['current_academic_period_id'])->get();
+        $details['academic_period_label'] = $period['label'] ?? 'Not assigned';
         $details['enrollments'] = $this->call->model('AcademicPeriodModel')->enrollments($id);
         $credentials = $this->db->table('student_qr_credentials')
             ->select('generated_at, status')->where('student_id', $id)
