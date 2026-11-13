@@ -1,5 +1,7 @@
 # Fines Monitoring API
 
+Xendit test checkout setup, file/function explanations, migration commands, and deployment checks: [docs/XENDIT_SETUP.md](docs/XENDIT_SETUP.md).
+
 LavaLust API for the React fines monitoring system. Local development uses WAMP,
 PHP 8+ and the existing MySQL database configured in `.env`.
 

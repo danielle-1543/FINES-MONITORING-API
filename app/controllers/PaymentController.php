@@ -79,6 +79,22 @@ class PaymentController extends Controller
         ], 'STUDENT');
     }
 
+    public function xendit_checkout(): void
+    {
+        $this->run('POST', function ($id, $data) {
+            $this->api->rate_limit('xendit-checkout:' . $id, 10, 600);
+            return ['data' => $this->call->model('XenditPaymentModel')->checkout($id, $this->id($data['organization_id'] ?? null))];
+        }, 'STUDENT');
+    }
+
+    public function xendit_status(): void
+    {
+        $this->run('GET', function ($id) {
+            $this->api->rate_limit('xendit-status:' . $id, 30, 600);
+            return ['data' => $this->call->model('XenditPaymentModel')->status($id, $this->id($_GET['id'] ?? null))];
+        }, 'STUDENT');
+    }
+
     public function periods(): void
     {
         $this->run('GET', fn ($id) => [

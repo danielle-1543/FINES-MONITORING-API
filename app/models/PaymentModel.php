@@ -133,22 +133,22 @@ class PaymentModel extends Model
         throw new DomainException('Fine not found for this student.', 404);
     }
 
-    public function submit(int $userId, array $data, ?array $proof = null): void
+    public function submit(int $userId, array $data, ?array $proof = null, ?string $xenditReference = null): int
     {
         $key = $data['fine_key'] ?? '';
         if ($key !== 'ALL') {
             throw new DomainException('Pay the full payable balance for an organization.', 422);
         }
-        $method = $data['method'] ?? '';
+        $method = $xenditReference !== null ? 'XENDIT_TEST' : ($data['method'] ?? '');
         $reference = trim(is_string($data['reference_number'] ?? '') ? ($data['reference_number'] ?? '') : '');
-        if (!is_string($key) || !in_array($method, [
+        if (!is_string($key) || ($xenditReference === null && !in_array($method, [
             'CASH',
             'GCASH'
-        ], true)) {
+        ], true))) {
             throw new DomainException('Select a fine and Cash or GCash.', 422);
         }
-        $amount = $this->cents($data['amount'] ?? null);
-        if ($amount <= 0) {
+        $amount = $xenditReference !== null ? 0 : $this->cents($data['amount'] ?? null);
+        if ($xenditReference === null && $amount <= 0) {
             throw new DomainException('Amount must be greater than zero.', 422);
         }
         if (strlen($reference) > 100 || ($method === 'GCASH' && !preg_match('/^[A-Za-z0-9-]{6,100}$/', $reference))) {
@@ -195,6 +195,7 @@ class PaymentModel extends Model
                 if (!$items) {
                     throw new DomainException('No fines are available for payment to this organization.', 409);
                 }
+                if ($xenditReference !== null) $amount = $total;
                 if ($amount !== $total) {
                     throw new DomainException('The payable total changed. Refresh and submit the updated total.', 409);
                 }
@@ -240,7 +241,18 @@ class PaymentModel extends Model
                         'amount' => $allocation,
                     ]);
             }
+            if ($xenditReference !== null) {
+                $this->db->table('xendit_payments')->insert([
+                    'claim_id' => $claimId,
+                    'reference_id' => $xenditReference,
+                    'state' => 'CREATING',
+                    'mode' => 'test',
+                    'created_at' => $this->now(),
+                    'updated_at' => $this->now(),
+                ]);
+            }
             $this->db->commit();
+            return $claimId;
         } catch (Throwable $e) {
             $this->db->roll_back();
             throw $e;
@@ -252,12 +264,15 @@ class PaymentModel extends Model
         $this->db->transaction();
         try {
             $s = $this->student($userId, true);
-            $claim = $this->db->raw('SELECT id, status FROM payment_claims WHERE id=? AND student_id=? FOR UPDATE', [
+            $claim = $this->db->raw('SELECT id, status, method FROM payment_claims WHERE id=? AND student_id=? FOR UPDATE', [
                 $claimId,
                 $s['id']
             ])->fetch(PDO::FETCH_ASSOC);
             if (!$claim) {
                 throw new DomainException('Claim not found.', 404);
+            }
+            if ($claim['method'] === 'XENDIT_TEST') {
+                throw new DomainException('Xendit checkouts are managed by the payment provider. Check their status or wait for expiry.', 409);
             }
             if ($claim['status'] !== 'PENDING') {
                 throw new DomainException('Only pending claims can be cancelled.', 409);
@@ -489,10 +504,13 @@ class PaymentModel extends Model
             if (!$this->org_scope($org, $student['course'])) {
                 throw new DomainException('Student is outside your course.', 403);
             }
-            $claim = $this->db->raw('SELECT id, student_id, org_user_id, fine_key, amount, status FROM payment_claims WHERE id=? AND org_user_id=? FOR UPDATE', [
+            $claim = $this->db->raw('SELECT id, student_id, org_user_id, fine_key, amount, status, method FROM payment_claims WHERE id=? AND org_user_id=? FOR UPDATE', [
                 $claimId,
                 $orgId
             ])->fetch(PDO::FETCH_ASSOC);
+            if ($claim['method'] === 'XENDIT_TEST') {
+                throw new DomainException('Xendit test payments can only be confirmed by verified provider status.', 409);
+            }
             if ($claim['status'] !== 'PENDING') {
                 throw new DomainException('This claim has already been reviewed or cancelled.', 409);
             }
