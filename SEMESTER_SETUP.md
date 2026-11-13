@@ -71,6 +71,16 @@ be edited to today/future collection times without changing their cap coverage.
 
 ## Payments and reports
 
+Student Fine Archives is a personal, current-semester page. Its API uses the
+authenticated student and the open current period from Academic Settings, ignoring
+client-supplied student IDs and semester overrides. It shows fines and absences
+(including zero-charge absences and paid fines) in one chronological list. The
+organization filter affects the list; the financial summary covers every
+organization in that semester. There are no allocations, exports or semester
+selectors on this student page. No open current semester produces an empty state.
+The student dashboard has no semester or all-semester financial summary panels.
+Admin/organization archives retain their existing filters, tables and exports.
+
 Students choose a semester, then an eligible organization and an open payment
 schedule, then **Pay fines**. Cash/GCash or Xendit test checkout appear at that
 point. A positive amount up to the available balance may be submitted; partial

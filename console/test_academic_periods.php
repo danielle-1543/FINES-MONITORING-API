@@ -33,7 +33,9 @@ $GLOBALS['xenditTestLava']->call = new class($academic, $payments, $schedule, $o
         if ($name === 'PaymentModel') return $this->payments;
         if ($name === 'PaymentPeriodModel') return $this->schedule;
         if ($name === 'StudentModel') return new class { public function programs() { return ['BSIT' => [], 'BSCS' => []]; } };
-        if ($name === 'StudentVoucherModel') return new class { public function attach($rows) { return $rows; } };
+        if ($name === 'StudentVoucherModel') return new class {
+            public function attach($rows) { foreach ($rows as &$row) if ($row['fine_key'] === 'violation-50') $row['discount_amount'] = '5.00'; return $rows; }
+        };
         return $this->fallback->model($name);
     }
 };
@@ -79,9 +81,20 @@ $pdo->exec("UPDATE payment_claims SET status='CONFIRMED' WHERE id=$next");
 check(array_column($payments->fines(2), null, 'fine_key')['scan-2']['outstanding'] === '0.00', 'full settlement makes capped semester balance zero');
 denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'organization_id' => 10, 'amount' => '0'], null, 'zero-check'), 422, 'zero Xendit amount cannot silently become full balance');
 $archive = new FineArchiveModel();
-$report = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['academic_period_id' => (string) $second]);
+$report = $archive->report(['role' => 'ADMIN', 'sub' => 99], ['academic_period_id' => (string) $second]);
 check(count($report['fines']) === 1 && $report['fines'][0]['settlement_status'] === 'PAID' && count($report['payments']) === 2, 'archives retain paid fine with both partial-payment allocations');
 check(!$archive->report(['role' => 'ORGANIZATION', 'sub' => 20], [])['fines'], 'organization cannot read another organization archives');
+$pdo->exec("INSERT INTO org_scan_records VALUES(90,2,2,'ATTENDANCE','0.00','2026-11-15 08:00:00',$second,0,'ABSENT');
+    INSERT INTO org_scan_records VALUES(91,999,2,'ATTENDANCE','999.00','2026-11-15 09:00:00',$second,0,'ABSENT');
+    INSERT INTO org_violation_records VALUES(50,2,NULL,20,'Uniform violation','40.00','2026-11-15 10:00:00',$second,0);
+    INSERT INTO organization_payment_periods VALUES(20,20,$second,'USG cap','1000-01-01','9999-12-31','2000-01-01','2099-01-01','30.00');
+    INSERT INTO payment_claims(student_id,org_user_id,fine_key,amount,method,status) VALUES
+        (2,20,'violation-50','10.00','CASH','CONFIRMED'),(2,20,'violation-50','8.00','CASH','PENDING'),(2,20,'violation-50','999.00','CASH','CANCELLED');");
+$personal = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['student_id' => '999', 'academic_period_id' => (string) $first, 'export' => '1', 'status' => 'UNPAID']);
+check($personal['current_period']['id'] === $second && count($personal['records']) === 3, 'student archive enforces authenticated student and current semester despite supplied filters');
+check(array_column($personal['records'], 'id') === ['violation-50', 'scan-90', 'scan-2'], 'one chronological list includes zero-fine absences and keeps fully paid fines visible');
+check(count($personal['organizations']) === 2 && !isset($personal['payments']), 'student archive has dynamic organization breakdown without allocation tables');
+check($personal['summary'] === ['original' => '120.00', 'cap_adjustment' => '30.00', 'discount' => '5.00', 'payable' => '85.00', 'paid' => '70.00', 'outstanding' => '15.00'], 'personal summary applies separate caps and vouchers; pending/cancelled payments never reduce balance');
 $pdo->exec("ALTER TABLE org_events ADD event_type TEXT; ALTER TABLE org_events ADD absence_enabled INTEGER DEFAULT 0;
     ALTER TABLE org_events ADD attendance_finalized_at TEXT; ALTER TABLE org_events ADD absence_fine_amount TEXT;
     ALTER TABLE org_scan_records ADD recorded_by INTEGER;
@@ -119,4 +132,11 @@ check((int) $pdo->query('SELECT COUNT(*) FROM org_event_roster WHERE event_id=4 
 foreach (['qr_token_status', 'qr_token_generated_at', 'activation_code_hash', 'activation_code', 'activation_code_expires_at'] as $field) $pdo->exec('ALTER TABLE students ADD ' . $field . ' TEXT');
 $studentsModel->register_for_period(['student_number' => 'DEMO-NEW', 'full_name' => 'New Student', 'course' => 'BSIT', 'year_level' => '1st Year', 'section' => 'F1', 'account_status' => 'ACTIVE', 'activation_status' => 'PENDING', 'qr_token' => 'new-qr'], $second);
 check((int) $pdo->query("SELECT current_academic_period_id FROM students WHERE student_number='DEMO-NEW'")->fetchColumn() === $second, 'registration saves semester directly on student data without a second workflow');
+$pdo->exec("UPDATE students SET current_academic_period_id=$first WHERE id=2");
+check(count($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['records']) === 3, 'profile semester changes cannot reassign archived sources or override Academic Settings');
+$pdo->exec('UPDATE academic_periods SET is_current=0');
+$empty = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['academic_period_id' => 'all']);
+check($empty['current_period'] === null && !$empty['records'] && !$empty['organizations'], 'missing active semester returns empty state with no historical fallback');
+$pdo->exec("UPDATE academic_periods SET is_current=1,status='CLOSED' WHERE id=$second");
+check($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['current_period'] === null, 'closed current semester cannot expose closed-period student archives');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

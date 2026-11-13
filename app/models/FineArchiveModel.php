@@ -5,12 +5,10 @@ class FineArchiveModel extends Model
     public function report(array $auth, array $filters): array
     {
         $role = $auth['role'];
+        if ($role === 'STUDENT') return $this->student_current((int) $auth['sub']);
         $orgId = $role === 'ORGANIZATION' ? (int) $auth['sub'] : 0;
         $studentId = 0;
-        if ($role === 'STUDENT') {
-            $studentId = (int) $this->db->table('students')->select('id')->where('user_id', '=', $auth['sub'])->get(PDO::FETCH_COLUMN);
-            if (!$studentId) throw new DomainException('Student not found.', 404);
-        } elseif (!empty($filters['student_id'])) {
+        if (!empty($filters['student_id'])) {
             $studentId = filter_var($filters['student_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             if (!$studentId) throw new DomainException('Choose a valid student.', 422);
         }
@@ -82,5 +80,60 @@ class FineArchiveModel extends Model
             'payments' => $export ? $payments : array_slice($payments, ($paymentPage - 1) * 20, 20),
             'pagination' => ['page' => $page, 'pages' => $pages, 'total' => count($visible)],
             'payment_pagination' => ['page' => $paymentPage, 'pages' => $paymentPages, 'total' => count($payments)]];
+    }
+
+    private function student_current(int $userId): array
+    {
+        $studentId = (int) $this->db->table('students')->select('id')->where('user_id', $userId)->get(PDO::FETCH_COLUMN);
+        if (!$studentId) throw new DomainException('Student not found.', 404);
+        $current = $this->call->model('AcademicPeriodModel')->current();
+        $fields = ['original', 'cap_adjustment', 'discount', 'payable', 'paid', 'outstanding'];
+        $totals = array_fill_keys($fields, 0);
+        $decimal = static fn ($amount) => number_format($amount / 100, 2, '.', '');
+        $empty = ['current_period' => null, 'records' => [], 'organizations' => [], 'summary' => array_map($decimal, $totals)];
+        if (!$current || $current['status'] !== 'OPEN') return $empty;
+        $periodId = (int) $current['id'];
+        $records = []; $organizations = [];
+        $addOrganization = static function ($id, $name) use (&$organizations, $totals): void {
+            if (!isset($organizations[$id])) $organizations[$id] = ['id' => (int) $id, 'name' => $name] + $totals;
+        };
+        // Include uncharged absences too; the monetary ledger intentionally omits zero attendance fines.
+        $absences = $this->db->table('org_scan_records r')
+            ->select('r.id,r.recorded_at,r.fine_amount,e.name AS event_name,e.org_user_id,u.organization_name')
+            ->join('org_events e', 'e.id=r.event_id')->join('users u', 'u.id=e.org_user_id')
+            ->where('r.student_id', $studentId)->where('r.academic_period_id', $periodId)
+            ->where('r.record_type', 'ATTENDANCE')->where('r.attendance_status', 'ABSENT')->get_all();
+        foreach ($absences as $absence) {
+            $key = 'scan-' . $absence['id'];
+            $records[$key] = ['id' => $key, 'description' => 'Absence · ' . $absence['event_name'], 'recorded_at' => $absence['recorded_at'],
+                'organization_id' => (int) $absence['org_user_id'], 'organization_name' => $absence['organization_name'],
+                'fine_amount' => $absence['fine_amount'], 'type' => 'Absence'];
+            $addOrganization($absence['org_user_id'], $absence['organization_name']);
+        }
+        // Reuse the complete personal ledger before filtering: legacy cap coverage and
+        // confirmed allocations must not be recalculated from a partial semester subset.
+        foreach ($this->call->model('PaymentModel')->fine_rows([$studentId]) as $fine) {
+            if ((int) ($fine['academic_period_id'] ?? 0) !== $periodId) continue;
+            $key = $fine['fine_key'];
+            if (!isset($records[$key])) $records[$key] = ['id' => $key,
+                'description' => ($fine['violation_name'] ?: 'Fine') . ' · ' . $fine['event_name'], 'recorded_at' => $fine['recorded_at'],
+                'organization_id' => (int) $fine['org_user_id'], 'organization_name' => $fine['organization_name'],
+                'fine_amount' => $fine['fine_amount'], 'type' => 'Fine'];
+            $addOrganization($fine['org_user_id'], $fine['organization_name']);
+            foreach (['original' => 'fine_amount', 'cap_adjustment' => 'cap_adjustment', 'discount' => 'discount_amount',
+                'payable' => 'payable_amount', 'paid' => 'paid_amount', 'outstanding' => 'outstanding'] as $target => $source) {
+                $amount = (int) round((float) $fine[$source] * 100);
+                $totals[$target] += $amount;
+                $organizations[$fine['org_user_id']][$target] += $amount;
+            }
+        }
+        $records = array_values($records);
+        usort($records, static fn ($a, $b) => [$b['recorded_at'], $b['id']] <=> [$a['recorded_at'], $a['id']]);
+        foreach ($organizations as &$organization) foreach ($fields as $field) $organization[$field] = $decimal($organization[$field]);
+        unset($organization);
+        $organizations = array_values($organizations);
+        usort($organizations, static fn ($a, $b) => strcasecmp($a['name'], $b['name']));
+        return ['current_period' => ['id' => $periodId, 'label' => $current['label']], 'records' => $records,
+            'organizations' => $organizations, 'summary' => array_map($decimal, $totals)];
     }
 }
