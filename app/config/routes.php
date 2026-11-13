@@ -5,8 +5,6 @@ defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 $router->get('/', 'AuthController::index');
 $router->get('/api/academic-periods', 'AcademicController::periods');
 $router->post('/api/admin/academic-periods/save', 'AcademicController::save');
-$router->get('/api/admin/enrollments', 'AcademicController::enrollments');
-$router->post('/api/admin/enrollments/save', 'AcademicController::enroll');
 $router->get('/api/fine-archives', 'AcademicController::archives');
 $router->get('/api/admin/academic-periods/legacy', 'AcademicController::legacy');
 $router->post('/api/admin/academic-periods/classify', 'AcademicController::classify');

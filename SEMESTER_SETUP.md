@@ -29,32 +29,34 @@ existing Philippine-time no-past-date policy.
 5. Sign in as Admin and open **Academic Settings**. Enter the academic year start
    (e.g. 2026 means 2026–2027), choose a semester, and make it current. There are
    no semester date fields to fill in.
-6. Open **Student Management**. Register/import students into the selected open
-   semester. For existing students, reuse their exact student number and name;
-   an import adds enrollment to that account instead of generating another QR.
-   Already-enrolled rows are skipped; use their profile to correct them.
+6. Open **Student Management**. Register/import new students into the selected
+   semester. Existing student numbers are skipped. Update existing students using
+   **Edit Profile** or **Multiple edits**; choose Change academic year / semester
+   or include the semester with a promotion/correction. There is no separate
+   enrollment workflow, status, or confirmation step.
 7. Each organization creates its payment schedule for the same academic semester,
    with a future/today opening and closing date and optional cap. New events
    also select an open academic semester, defaulting to the current one.
-8. Check one enrolled student's attendance/violation notification, Fine Archives,
+8. Check one registered student's attendance/violation notification, Fine Archives,
    semester totals, and a small **test** checkout before wider use. Xendit remains
    test-only. Local checks cannot verify live OneSignal delivery or provider
    credentials.
 
 ## Each new semester
 
-Create the next academic period and make it current. Import the next enrollment
-list (or use Student Profile → Semester enrollment). Update year, section and
-program there, retaining the existing student/account/QR. Previous enrollments,
-fines, claims and receipts remain in their original periods. Setting a global
-current period does not automatically enroll everyone or promote students.
+Create the next academic period and make it current. For returning students,
+select the students in Student Management and use **Multiple edits** to update
+semester, year level and section together. For one student, use **Edit Profile**.
+Review the before/after changes and confirm. Accounts and QR tokens remain the
+same. Original fine, attendance and payment semester references never change.
+The student list filters the semester saved directly in the student data.
 
-Use **Correct** for a mistake in an existing semester. Editing an older semester
-does not change the current profile unless explicitly selected. Closing a period
-prevents new enrollment/recording in it; scheduled payment collection is governed
-by its organization's payment window. Reopen the academic period to resume
-recording. Select a semester in **Fine Archives** or student history to view old
-records without entering past dates.
+New registration and bulk import save that semester directly on the student.
+Changing the global current period does not overwrite existing student profiles.
+Event rosters/scanning compare that saved student semester with the event period.
+Closed semesters cannot be chosen for new records. No separate enrollment records
+are read or written by this workflow. The former enrollment table is left unused
+for schema compatibility; no database data is dropped by this code change.
 
 ## Existing records
 

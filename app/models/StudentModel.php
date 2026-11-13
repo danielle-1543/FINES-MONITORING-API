@@ -9,13 +9,14 @@ class StudentModel extends Model
     private function update_values(array $input, int $count): array
     {
         $allowed = [
-            'PROMOTION' => ['year_level', 'section'],
-            'RETAINED' => ['year_level', 'section'],
+            'PROMOTION' => ['year_level', 'section', 'current_academic_period_id'],
+            'RETAINED' => ['year_level', 'section', 'current_academic_period_id'],
             'SECTION_CHANGE' => ['section'],
-            'SHIFT_COURSE' => ['course', 'year_level', 'section'],
+            'SEMESTER_CHANGE' => ['current_academic_period_id', 'year_level', 'section'],
+            'SHIFT_COURSE' => ['course', 'year_level', 'section', 'current_academic_period_id'],
             'TRANSFERRED_OUT' => [],
             'DROPPED_OUT' => [],
-            'OTHER_CORRECTION' => ['student_number', 'full_name', 'year_level', 'section'],
+            'OTHER_CORRECTION' => ['student_number', 'full_name', 'year_level', 'section', 'current_academic_period_id'],
             'DEACTIVATE' => [],
             'REACTIVATE' => [],
         ];
@@ -65,6 +66,10 @@ class StudentModel extends Model
                 throw new DomainException('Choose a valid destination course.', 422);
             }
         }
+        if (isset($values['current_academic_period_id'])) {
+            if (!ctype_digit($values['current_academic_period_id'])) throw new DomainException('Choose a valid semester.', 422);
+            $this->call->model('AcademicPeriodModel')->period((int) $values['current_academic_period_id'], true);
+        }
         return [$reason, trim($note), $values];
     }
 
@@ -99,7 +104,7 @@ class StudentModel extends Model
         try {
             // Lock the exact reviewed students in a stable order before validating or writing.
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $students = $this->db->raw('SELECT id,user_id,student_number,full_name,course,year_level,section,account_status,departure_reason,
+            $students = $this->db->raw('SELECT id,user_id,student_number,full_name,course,year_level,section,current_academic_period_id,account_status,departure_reason,
                 (SELECT COALESCE(MAX(h.id),0) FROM student_change_history h WHERE h.student_id=students.id) AS edit_revision
                 FROM students WHERE id IN (' . $placeholders . ') ORDER BY id ASC FOR UPDATE', $ids)->fetchAll(PDO::FETCH_ASSOC);
             if (count($students) !== count($ids)) {
@@ -115,7 +120,9 @@ class StudentModel extends Model
                 }
             }
             $review = [];
+            $periodLabels = array_column($this->call->model('AcademicPeriodModel')->periods(), 'label', 'id');
             foreach ($students as $student) {
+                $student['academic_period_label'] = $periodLabels[$student['current_academic_period_id'] ?? 0] ?? 'Not assigned';
                 if ($reason === 'DEACTIVATE' && !in_array($student['departure_reason'], ['TRANSFERRED_OUT', 'DROPPED_OUT'], true)) {
                     throw new DomainException('Deactivation is available only after recording transfer out or dropout for every selected student.', 409);
                 }
@@ -123,6 +130,7 @@ class StudentModel extends Model
                     throw new DomainException('Student number already belongs to another student.', 409);
                 }
                 $after = array_replace($student, $values);
+                $after['academic_period_label'] = $periodLabels[$after['current_academic_period_id'] ?? 0] ?? 'Not assigned';
                 if (in_array($reason, ['TRANSFERRED_OUT', 'DROPPED_OUT'], true)) {
                     $after['departure_reason'] = $reason;
                 } elseif (in_array($reason, ['PROMOTION', 'RETAINED', 'SHIFT_COURSE', 'REACTIVATE'], true)) {
@@ -144,15 +152,10 @@ class StudentModel extends Model
             $batch = bin2hex(random_bytes(16));
             $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
             foreach ($review as $change) {
-                $updates = array_intersect_key($change['after'], array_flip(['student_number', 'full_name', 'course', 'year_level', 'section', 'account_status', 'departure_reason']));
+                $updates = array_intersect_key($change['after'], array_flip(['student_number', 'full_name', 'course', 'year_level', 'section', 'current_academic_period_id', 'account_status', 'departure_reason']));
                 if ($this->db->table('students')->where('id', $change['id'])->update($updates) === false) {
                     throw new RuntimeException('Student update failed.');
                 }
-                $academicChanged = false;
-                foreach (['course', 'year_level', 'section'] as $field) {
-                    if ($change['before'][$field] !== $change['after'][$field]) $academicChanged = true;
-                }
-                if ($academicChanged) $this->call->model('AcademicPeriodModel')->sync_current_enrollment((int) $change['id']);
                 if (in_array($reason, ['DEACTIVATE', 'REACTIVATE'], true) && !empty($change['before']['user_id'])) {
                     $userId = (int) $change['before']['user_id'];
                     // Incrementing the version invalidates previously issued access tokens.
@@ -241,12 +244,8 @@ class StudentModel extends Model
 
     private function filtered(array $filters)
     {
-        $enrolled = null;
-        if (!empty($filters['academic_period_id'])) {
-            $enrolled = $this->db->table('student_enrollments')->select('student_id')->where('academic_period_id', '=', (int) $filters['academic_period_id'])->get_all(PDO::FETCH_COLUMN);
-        }
         $query = $this->db->table('students');
-        if ($enrolled !== null) $query->in('id', $enrolled ?: [0]);
+        if (!empty($filters['academic_period_id'])) $query->where('current_academic_period_id', (int) $filters['academic_period_id']);
         $search = trim($filters['search'] ?? '');
         if ($search !== '') {
             $query->grouped(function ($query) use ($search) {
@@ -419,7 +418,6 @@ class StudentModel extends Model
         $details['current_academic_period_id'] = $student['current_academic_period_id'] ?? null;
         $period = empty($details['current_academic_period_id']) ? null : $this->db->table('academic_periods')->select('label')->where('id', $details['current_academic_period_id'])->get();
         $details['academic_period_label'] = $period['label'] ?? 'Not assigned';
-        $details['enrollments'] = $this->call->model('AcademicPeriodModel')->enrollments($id);
         $credentials = $this->db->table('student_qr_credentials')
             ->select('generated_at, status')->where('student_id', $id)
             ->order_by('generated_at', 'ASC')->get_all();
@@ -437,6 +435,7 @@ class StudentModel extends Model
             'section',
             'course',
             'year_level',
+            'current_academic_period_id',
             'account_status',
             'activation_status',
             'qr_token',
@@ -459,15 +458,11 @@ class StudentModel extends Model
         return $this->db->table('students')->where('student_number', '=', $number)->get() ?: null;
     }
 
-    public function register_with_enrollment(array $record, int $periodId, int $adminId): bool
+    public function register_for_period(array $record, int $periodId): bool
     {
-        $this->db->transaction();
-        try {
-            if (!$this->register_student_record($record)) throw new RuntimeException('Student registration failed.');
-            $id = (int) $this->db->last_id();
-            $this->call->model('AcademicPeriodModel')->enroll($id, $record + ['academic_period_id' => $periodId, 'mode' => 'ENROLL', 'make_current' => true], $adminId);
-            $this->db->commit(); return true;
-        } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
+        $this->call->model('AcademicPeriodModel')->period($periodId, true);
+        $record['current_academic_period_id'] = $periodId;
+        return $this->register_student_record($record);
     }
 
     public function delete_pending_student(int $id): bool

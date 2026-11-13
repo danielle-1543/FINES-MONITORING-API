@@ -531,7 +531,7 @@ class OrgEventModel extends Model
     {
         $periodId = $eventId ? ($this->event($orgId, $eventId)['academic_period_id'] ?? null)
             : $this->call->model('AcademicPeriodModel')->recording_period(null, substr($now, 0, 10));
-        $this->call->model('AcademicPeriodModel')->require_enrolled($studentId, $periodId ? (int) $periodId : null);
+        $this->call->model('AcademicPeriodModel')->require_student_period($studentId, $periodId ? (int) $periodId : null);
         foreach ($types as $type) {
             $this->db->table('org_violation_records')
                 ->insert([
@@ -627,7 +627,7 @@ class OrgEventModel extends Model
         return $this->write($orgId, function () use ($orgId, $data) {
             // Recheck status, window, ownership and duplicates at confirmation time.
             [$event, $student, $fine, $now] = $this->scan_context($orgId, $data, true);
-            $this->call->model('AcademicPeriodModel')->require_enrolled((int) $student['id'], empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
+            $this->call->model('AcademicPeriodModel')->require_student_period((int) $student['id'], empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
             $types = $this->selected_types($orgId, $data);
             if ($event['event_type'] === 'VIOLATION') {
                 $types[(int) $event['violation_type_id']] = $this->violation_type($orgId, (int) $event['violation_type_id']);

@@ -67,7 +67,7 @@ class StudentController extends Controller
         $now = new DateTimeImmutable('now', new DateTimeZone('Asia/Manila'));
         $expires = $now->modify('+7 days')->format('Y-m-d H:i:s');
         $token = bin2hex(random_bytes(32));
-        $ok = $this->StudentModel->register_with_enrollment([
+        $ok = $this->StudentModel->register_for_period([
             ...$d,
             'user_id' => null,
             'account_status' => 'ACTIVE',
@@ -78,7 +78,7 @@ class StudentController extends Controller
             'activation_code_hash' => password_hash($code, PASSWORD_DEFAULT),
             'activation_code' => $code,
             'activation_code_expires_at' => $expires,
-        ], $periodId, $adminId);
+        ], $periodId);
         if (!$ok) {
             throw new RuntimeException('Insert failed.');
         }
@@ -443,7 +443,6 @@ class StudentController extends Controller
             $periodId = (int) ($v['academic_period_id'] ?? 0);
             try { $this->call->model('AcademicPeriodModel')->period($periodId, true); } catch (DomainException $error) { $this->fail($error->getMessage(), $error->getCode()); return; }
             $adminId = (int) $this->api->require_jwt()['sub'];
-            $enrolled = 0;
             $rows = $v['rows'] ?? null;
             if (!is_array($rows) || count($rows) > 500) {
                 return $this->fail('Import must contain at most 500 student rows.');
@@ -474,12 +473,8 @@ class StudentController extends Controller
                 }
                 $existing = $this->StudentModel->find_by_number($d['student_number']);
                 if ($existing) {
-                    try {
-                        if (mb_strtolower(trim($existing['full_name'])) !== mb_strtolower($d['full_name'])) throw new DomainException('Student number belongs to a different name.', 409);
-                        $this->call->model('AcademicPeriodModel')->enroll((int) $existing['id'], $d + ['academic_period_id' => $periodId, 'mode' => 'ENROLL', 'make_current' => true], $adminId);
-                        $enrolled++; $seenNumbers[$d['student_number']] = true;
-                    } catch (DomainException $error) { $skipped++; $errors[] = "Row {$line}: " . $error->getMessage(); }
-                    catch (Throwable $error) { $skipped++; $errors[] = "Row {$line}: Unable to save semester enrollment."; error_log('Enrollment import: ' . get_class($error)); }
+                    $skipped++;
+                    $errors[] = "Row {$line}: student already registered. Use Edit Profile or Multiple edits to update existing data.";
                     continue;
                 }
                 if (isset($seenDetails[$key]) || $this->StudentModel->student_details_exist($d)) {
@@ -503,7 +498,6 @@ class StudentController extends Controller
                 'message' => 'Bulk import processed.',
                 'data' => [
                     'created' => $created,
-                    'enrolled' => $enrolled,
                     'skipped' => $skipped,
                     'errors' => array_slice($errors, 0, 30),
                     'additional_errors' => max(0, count($errors) - 30)

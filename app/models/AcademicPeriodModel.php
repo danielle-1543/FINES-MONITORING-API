@@ -66,63 +66,12 @@ class AcademicPeriodModel extends Model
             $this->db->commit(); return ['id' => $id];
         } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
     }
-    public function enrollments(int $studentId): array
+    public function require_student_period(int $studentId, ?int $periodId): void
     {
-        return $this->db->table('student_enrollments e')->select('e.id,e.student_id,e.academic_period_id,e.course,e.year_level,e.section,e.enrollment_status,p.label,p.starts_on,p.ends_on')
-            ->join('academic_periods p', 'p.id=e.academic_period_id')->where('e.student_id', '=', $studentId)->order_by('p.year_start', 'DESC')->order_by('p.id', 'DESC')->get_all();
-    }
-    public function require_enrolled(int $studentId, ?int $periodId): void
-    {
-        if (!$periodId) return; // Existing legacy event rosters remain valid.
+        if (!$periodId) return;
         $this->period($periodId, true);
-        $enrollment = $this->db->table('student_enrollments')->where('student_id', '=', $studentId)
-            ->where('academic_period_id', '=', $periodId)->where('enrollment_status', '=', 'ENROLLED')->get();
-        if (!$enrollment) throw new DomainException('Student is not enrolled in this academic semester. Ask the administrator to update semester enrollment.', 409);
-    }
-    public function enroll(int $studentId, array $input, int $adminId): void
-    {
-        $mode = $input['mode'] ?? 'ENROLL';
-        if (!in_array($mode, ['ENROLL', 'CORRECT'], true)) throw new DomainException('Choose enroll or correct semester details.', 422);
-        $period = $this->period((int) ($input['academic_period_id'] ?? 0), $mode === 'ENROLL');
-        $course = strtoupper(trim((string) ($input['course'] ?? '')));
-        $year = $input['year_level'] ?? '';
-        $section = strtoupper(trim((string) ($input['section'] ?? '')));
-        $status = $input['enrollment_status'] ?? 'ENROLLED';
-        $programs = $this->call->model('StudentModel')->programs();
-        if (!in_array($course, array_merge(array_keys($programs), ['CCS', 'CAS', 'CRIM']), true)
-            || !in_array($year, ['1st Year', '2nd Year', '3rd Year', '4th Year'], true)
-            || !preg_match('/^[A-Z]+[1-9][0-9]*$/', $section) || strlen($section) > 50
-            || !in_array($status, ['ENROLLED', 'WITHDRAWN', 'COMPLETED'], true)) throw new DomainException('Enter valid program, year level, section and enrollment status.', 422);
-        $this->db->transaction();
-        try {
-            $student = $this->db->raw('SELECT id,course,year_level,section,current_academic_period_id FROM students WHERE id=? FOR UPDATE', [$studentId])->fetch(PDO::FETCH_ASSOC);
-            if (!$student) throw new DomainException('Student not found.', 404);
-            $old = $this->db->table('student_enrollments')->where('student_id', '=', $studentId)->where('academic_period_id', '=', $period['id'])->get();
-            if (($mode === 'ENROLL' && $old) || ($mode === 'CORRECT' && !$old)) throw new DomainException($old ? 'Already enrolled in this semester. Choose Correct to edit it.' : 'No enrollment exists in this semester. Choose Enroll first.', 409);
-            $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
-            $values = ['course' => $course, 'year_level' => $year, 'section' => $section, 'enrollment_status' => $status, 'updated_at' => $now];
-            if ($old) $this->db->table('student_enrollments')->where('id', '=', $old['id'])->update($values);
-            else $this->db->table('student_enrollments')->insert($values + ['student_id' => $studentId, 'academic_period_id' => $period['id'], 'created_at' => $now]);
-            $current = !empty($input['make_current']);
-            if ($current || (int) ($student['current_academic_period_id'] ?? 0) === (int) $period['id']) {
-                $this->db->table('students')->where('id', '=', $studentId)->update(['course' => $course, 'year_level' => $year, 'section' => $section, 'current_academic_period_id' => $period['id']]);
-            }
-            $this->db->table('student_change_history')->insert(['student_id' => $studentId, 'changed_by' => $adminId,
-                'batch_id' => bin2hex(random_bytes(16)), 'reason' => $old ? 'SEMESTER_CORRECTION' : 'SEMESTER_ENROLLMENT',
-                'note' => 'Enrollment snapshot; previous fine and payment periods unchanged.',
-                'before_values' => json_encode($old ?: [], JSON_THROW_ON_ERROR),
-                'after_values' => json_encode($values + ['academic_period_id' => $period['id'], 'make_current' => $current], JSON_THROW_ON_ERROR), 'changed_at' => $now]);
-            $this->db->commit();
-        } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
-    }
-    public function sync_current_enrollment(int $studentId): void
-    {
-        $student = $this->db->table('students')->where('id', '=', $studentId)->get();
-        if (empty($student['current_academic_period_id'])) return;
-        $this->period((int) $student['current_academic_period_id'], true);
-        $this->db->table('student_enrollments')->where('student_id', '=', $studentId)
-            ->where('academic_period_id', '=', $student['current_academic_period_id'])
-            ->update(array_intersect_key($student, array_flip(['course', 'year_level', 'section'])));
+        $student = $this->db->table('students')->select('current_academic_period_id')->where('id', $studentId)->get();
+        if (!$student || (int) $student['current_academic_period_id'] !== $periodId) throw new DomainException('Student semester does not match this record. Update the student data first.', 409);
     }
     public function legacy_sources(): array
     {

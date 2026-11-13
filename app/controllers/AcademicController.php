@@ -24,13 +24,6 @@ class AcademicController extends Controller
     }
     public function periods(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->periods()); }
     public function save(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->save($input), true); }
-    public function enrollments(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->enrollments((int) ($_GET['student_id'] ?? 0)), true); }
-    public function enroll(): void {
-        $this->run('POST', function ($auth, $input) {
-            $this->call->model('AcademicPeriodModel')->enroll((int) ($input['student_id'] ?? 0), $input, (int) $auth['sub']);
-            return ['message' => 'Semester enrollment saved. Existing fine periods, account and QR are preserved.'];
-        }, true);
-    }
     public function archives(): void { $this->run('GET', fn ($auth) => $this->call->model('FineArchiveModel')->report($auth, $_GET)); }
     public function legacy(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->legacy_sources(), true); }
     public function classify(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->classify($input, (int) $auth['sub']), true); }

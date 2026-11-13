@@ -12,7 +12,7 @@ class AttendanceModel extends Model
         $where = "account_status='ACTIVE' AND activation_status='ACTIVATED'";
         $event = $this->db->table('org_events')->select('academic_period_id')->where('id', '=', $eventId)->get();
         if (!empty($event['academic_period_id'])) {
-            $where .= " AND id IN (SELECT student_id FROM student_enrollments WHERE academic_period_id=? AND enrollment_status='ENROLLED')";
+            $where .= " AND current_academic_period_id=?";
             $params[] = $event['academic_period_id'];
         }
         if ($org['allowed_courses'] !== null) {

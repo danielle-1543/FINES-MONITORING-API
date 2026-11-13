@@ -2,15 +2,15 @@
 // Reuse the isolated SQLite/LavaLust Query Builder harness. Never loads .env.
 require __DIR__ . '/test_xendit.php';
 require dirname(__DIR__) . '/app/models/AcademicPeriodModel.php';
+require dirname(__DIR__) . '/app/models/StudentModel.php';
 require dirname(__DIR__) . '/app/models/FineArchiveModel.php';
 require dirname(__DIR__) . '/app/models/NotificationModel.php';
 require dirname(__DIR__) . '/app/models/AttendanceModel.php';
 [$pdo, $unused, $gateway] = fixture();
 $pdo->sqliteCreateFunction('CONCAT', fn (...$parts) => implode('', $parts));
-$pdo->exec("ALTER TABLE students ADD year_level TEXT; ALTER TABLE students ADD section TEXT;
+$pdo->exec("ALTER TABLE students ADD departure_reason TEXT; ALTER TABLE students ADD year_level TEXT; ALTER TABLE students ADD section TEXT;
     ALTER TABLE students ADD qr_token TEXT DEFAULT 'unchanged-qr'; ALTER TABLE students ADD current_academic_period_id INTEGER;
     CREATE TABLE academic_periods(id INTEGER PRIMARY KEY AUTOINCREMENT,year_start INTEGER,term TEXT,label TEXT,starts_on TEXT,ends_on TEXT,status TEXT,is_current INTEGER,UNIQUE(year_start,term));
-    CREATE TABLE student_enrollments(id INTEGER PRIMARY KEY AUTOINCREMENT,student_id INTEGER,academic_period_id INTEGER,course TEXT,year_level TEXT,section TEXT,enrollment_status TEXT,created_at TEXT,updated_at TEXT,UNIQUE(student_id,academic_period_id));
     CREATE TABLE student_change_history(id INTEGER PRIMARY KEY,student_id INTEGER,changed_by INTEGER,batch_id TEXT,reason TEXT,note TEXT,before_values TEXT,after_values TEXT,changed_at TEXT);
     CREATE TABLE academic_record_changes(id INTEGER PRIMARY KEY,changed_by INTEGER,academic_period_id INTEGER,source_kind TEXT,source_id INTEGER,change_details TEXT,changed_at TEXT);
     CREATE TABLE org_events(id INTEGER PRIMARY KEY,org_user_id INTEGER,name TEXT,violation_type_id INTEGER,scan_ends_at TEXT,academic_period_id INTEGER);
@@ -40,11 +40,12 @@ $GLOBALS['xenditTestLava']->call = new class($academic, $payments, $schedule, $o
 $first = $academic->save(['year_start' => 2026, 'term' => 'FIRST', 'is_current' => true])['id'];
 check($academic->current()['starts_on'] === null && $academic->current()['ends_on'] === null, 'semester setup requires no date fields');
 denied(fn () => $academic->save(['year_start' => 2026, 'term' => 'FIRST']), 409, 'duplicate semesters rejected');
-$enrollment = ['academic_period_id' => $first, 'course' => 'BSIT', 'year_level' => '1st Year', 'section' => 'F1', 'make_current' => true];
-$academic->enroll(2, $enrollment, 99);
+$pdo->exec("UPDATE students SET year_level='1st Year',section='F1',current_academic_period_id=$first WHERE id=2");
+$studentsModel = new StudentModel();
+$academic->require_student_period(2, $first);
+check(true, 'scanning accepts the semester stored directly on student data');
 $notifications = new NotificationModel(); $notifications->record_scan(1);
 $originalNotification = $pdo->query('SELECT * FROM student_notifications')->fetch();
-denied(fn () => $academic->enroll(2, $enrollment, 99), 409, 'duplicate enrollment cannot duplicate student account');
 $preview = $academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => true], 99);
 denied(fn () => $academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => false, 'fingerprint' => 'stale'], 99), 409, 'legacy classification requires matching preview');
 $academic->classify(['academic_period_id' => $first, 'kind' => 'event', 'source_id' => 1, 'preview' => false, 'fingerprint' => $preview['fingerprint']], 99);
@@ -53,14 +54,14 @@ check($pdo->query('SELECT * FROM student_notifications')->fetch() === $originalN
 $old = $payments->fines(2)[0];
 check($old['payable_amount'] === '50.00' && (int) $old['legacy_assessment'] === 1, 'classifying a legacy fine preserves its original cap');
 $second = $academic->save(['year_start' => 2026, 'term' => 'SECOND', 'is_current' => true])['id'];
-$academic->enroll(2, array_replace($enrollment, ['academic_period_id' => $second, 'year_level' => '2nd Year', 'section' => 'F2']), 99);
+$update = ['student_ids' => [2], 'reason' => 'SEMESTER_CHANGE', 'changes' => ['current_academic_period_id' => (string) $second, 'year_level' => '2nd Year', 'section' => 'F2'], 'preview' => true];
+$review = $studentsModel->update_students($update, 99);
+$studentsModel->update_students(array_replace($update, ['preview' => false, 'fingerprint' => $review['fingerprint']]), 99);
+check((int) $pdo->query('SELECT current_academic_period_id FROM students WHERE id=2')->fetchColumn() === $second, 'existing edit preview and confirmation update student semester');
+denied(fn () => $academic->require_student_period(2, $first), 409, 'scanning compares the current student semester without separate enrollment');
 $student = $pdo->query('SELECT * FROM students WHERE id=2')->fetch();
 check($student['qr_token'] === 'unchanged-qr' && $student['user_id'] == 1 && $student['year_level'] === '2nd Year', 'rollover updates profile while preserving account and QR');
-$history = array_column($academic->enrollments(2), null, 'academic_period_id');
-check($history[$first]['year_level'] === '1st Year' && $history[$second]['year_level'] === '2nd Year', 'enrollment snapshots preserve previous year level');
 check((int) $pdo->query('SELECT academic_period_id FROM org_scan_records WHERE id=1')->fetchColumn() === $first, 'current semester change never relabels previous fine');
-$academic->enroll(2, array_replace($enrollment, ['mode' => 'CORRECT', 'section' => 'F3', 'make_current' => false]), 99);
-check($pdo->query('SELECT section FROM students WHERE id=2')->fetchColumn() === 'F2', 'correcting an older enrollment does not change current profile');
 $pdo->exec("INSERT INTO org_events VALUES(2,10,'New Event',NULL,'2026-12-01 10:00:00',$second);
     INSERT INTO org_scan_records VALUES(2,2,2,'ATTENDANCE','80.00','2026-11-14 10:00:00',$second,0,'ABSENT');
     INSERT INTO organization_payment_periods VALUES(2,10,$second,'Second cap','1000-01-01','9999-12-31','2000-01-01','2099-01-01','60.00');");
@@ -80,7 +81,6 @@ denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'organization_id' => 
 $archive = new FineArchiveModel();
 $report = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['academic_period_id' => (string) $second]);
 check(count($report['fines']) === 1 && $report['fines'][0]['settlement_status'] === 'PAID' && count($report['payments']) === 2, 'archives retain paid fine with both partial-payment allocations');
-check($report['fines'][0]['enrollment_year_level'] === '2nd Year', 'archive uses semester enrollment details');
 check(!$archive->report(['role' => 'ORGANIZATION', 'sub' => 20], [])['fines'], 'organization cannot read another organization archives');
 $pdo->exec("ALTER TABLE org_events ADD event_type TEXT; ALTER TABLE org_events ADD absence_enabled INTEGER DEFAULT 0;
     ALTER TABLE org_events ADD attendance_finalized_at TEXT; ALTER TABLE org_events ADD absence_fine_amount TEXT;
@@ -103,4 +103,20 @@ check((int) $absence['academic_period_id'] === $first && (int) $absence['legacy_
 $academic->save(['id' => $first, 'year_start' => 2026, 'term' => 'FIRST', 'status' => 'CLOSED']);
 denied(fn () => $academic->recording_period($first, '2026-11-14'), 409, 'closed semester rejects new recording');
 check((int) $academic->current()['id'] === $second, 'closing older semester leaves current selection intact');
+$pdo->exec("INSERT INTO students(id,user_id,course,account_status,activation_status,full_name,student_number,year_level,section,current_academic_period_id)
+    VALUES(3,NULL,'BSIT','ACTIVE','PENDING','Second Student','DEMO-2','1st Year','F1',$first)");
+$batch = ['student_ids' => [2,3], 'reason' => 'SEMESTER_CHANGE', 'changes' => ['current_academic_period_id' => (string) $second, 'year_level' => '3rd Year', 'section' => 'F3'], 'preview' => true];
+$review = $studentsModel->update_students($batch, 99);
+denied(fn () => $studentsModel->update_students(array_replace($batch, ['preview' => false, 'fingerprint' => 'stale']), 99), 409, 'multiple edits reject an unreviewed semester change');
+$studentsModel->update_students(array_replace($batch, ['preview' => false, 'fingerprint' => $review['fingerprint']]), 99);
+check((int) $pdo->query("SELECT COUNT(*) FROM students WHERE current_academic_period_id=$second AND year_level='3rd Year' AND section='F3'")->fetchColumn() === 2, 'multiple edits change year, section and semester for every selected student');
+check($pdo->query('SELECT qr_token FROM students WHERE id=2')->fetchColumn() === 'unchanged-qr'
+    && (int) $pdo->query('SELECT academic_period_id FROM org_scan_records WHERE id=1')->fetchColumn() === $first,
+    'multiple edits preserve QR identity and previous fine semesters');
+$pdo->exec("INSERT INTO org_events(id,org_user_id,name,scan_ends_at,academic_period_id) VALUES(4,10,'Next event','2099-01-01',$second)");
+$attendance->snapshot(4, 10);
+check((int) $pdo->query('SELECT COUNT(*) FROM org_event_roster WHERE event_id=4 AND student_id=2')->fetchColumn() === 1, 'attendance roster uses student semester without an enrollment table');
+foreach (['qr_token_status', 'qr_token_generated_at', 'activation_code_hash', 'activation_code', 'activation_code_expires_at'] as $field) $pdo->exec('ALTER TABLE students ADD ' . $field . ' TEXT');
+$studentsModel->register_for_period(['student_number' => 'DEMO-NEW', 'full_name' => 'New Student', 'course' => 'BSIT', 'year_level' => '1st Year', 'section' => 'F1', 'account_status' => 'ACTIVE', 'activation_status' => 'PENDING', 'qr_token' => 'new-qr'], $second);
+check((int) $pdo->query("SELECT current_academic_period_id FROM students WHERE student_number='DEMO-NEW'")->fetchColumn() === $second, 'registration saves semester directly on student data without a second workflow');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

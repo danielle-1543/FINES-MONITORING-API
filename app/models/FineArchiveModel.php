@@ -31,9 +31,6 @@ class FineArchiveModel extends Model
         $fines = $ids ? $this->call->model('PaymentModel')->fine_rows($ids) : [];
         $students = $ids ? $this->db->table('students')->select('id,student_number,full_name')->in('id', $ids)->get_all() : [];
         $students = array_column($students, null, 'id');
-        $enrollments = $ids ? $this->db->table('student_enrollments')->in('student_id', $ids)->get_all() : [];
-        $enrollmentMap = [];
-        foreach ($enrollments as $enrollment) $enrollmentMap[$enrollment['student_id'] . ':' . $enrollment['academic_period_id']] = $enrollment;
         $byKey = []; $summaries = []; $visible = [];
         foreach ($fines as $fine) {
             if ($orgId && (int) $fine['org_user_id'] !== $orgId) continue;
@@ -42,10 +39,6 @@ class FineArchiveModel extends Model
             $fine['academic_period_label'] = $periodMap[$periodId]['label'] ?? 'Legacy / Unassigned';
             $fine['full_name'] = $students[$fine['student_id']]['full_name'] ?? '';
             $fine['student_number'] = $students[$fine['student_id']]['student_number'] ?? '';
-            $snapshot = $enrollmentMap[$fine['student_id'] . ':' . $periodId] ?? [];
-            $fine['enrollment_course'] = $snapshot['course'] ?? 'Not recorded';
-            $fine['enrollment_year_level'] = $snapshot['year_level'] ?? 'Not recorded';
-            $fine['enrollment_section'] = $snapshot['section'] ?? 'Not recorded';
             $paid = (int) round((float) $fine['paid_amount'] * 100);
             $due = (int) round((float) $fine['outstanding'] * 100);
             $fine['settlement_status'] = $due === 0 ? ($paid > 0 ? 'PAID' : 'SETTLED') : ($paid > 0 ? 'PARTIALLY_PAID' : 'UNPAID');
