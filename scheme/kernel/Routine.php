@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once __DIR__ . '/ApiErrors.php';
 /**
  * ------------------------------------------------------------------
  * LavaLust - an opensource lightweight PHP MVC Framework
@@ -186,6 +187,9 @@ if ( ! function_exists('_exception_handler'))
 	 */
 	function _exception_handler($e)
 	{
+		if (_is_api_request()) {
+			_api_error_response(500, get_class($e) . ': ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+		}
 		if(config_item('log_threshold') == 1 || config_item('log_threshold') == 3)
 		{
 			$logger = load_class('logger', 'kernel');
@@ -212,6 +216,15 @@ if ( ! function_exists('_error_handler'))
 	 */
 	function _error_handler($severity, $errstr, $errfile, $errline)
 	{
+		if (_is_api_request()) {
+			if (!(error_reporting() & $severity) && !in_array($severity, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR], true)) return false;
+			if (in_array($severity, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR], true)) {
+				_api_error_response(500, $errstr . ' in ' . $errfile . ':' . $errline);
+			}
+			// Warnings must be logged without corrupting otherwise valid JSON.
+			error_log('API PHP warning: ' . $errstr . ' in ' . $errfile . ':' . $errline);
+			return true;
+		}
 		// Map of PHP error levels
 		$error_levels = [
 			E_ERROR             => 'E_ERROR',

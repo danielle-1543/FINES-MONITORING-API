@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once __DIR__ . '/ApiErrors.php';
 /**
  * ------------------------------------------------------------------
  * LavaLust - an opensource lightweight PHP MVC Framework
@@ -69,6 +70,7 @@ class Errors
 	 */
 	public function show_error($heading, $message, $template, $code = 500)
 	{
+		if (_is_api_request()) _api_error_response((int) $code >= 400 && (int) $code <= 599 ? (int) $code : 500, (string) $heading . ': ' . (is_scalar($message) ? $message : json_encode($message)));
 		$template_path = config_item('error_view_path');
 		if (empty($template_path))
 		{
@@ -88,6 +90,7 @@ class Errors
 	 */
 	public function show_exception($exception)
 	{
+		if (_is_api_request()) _api_error_response(500, get_class($exception) . ': ' . $exception->getMessage());
 		$template_path = config_item('error_view_path');
 		if (empty($template_path))
 		{
@@ -115,6 +118,7 @@ class Errors
 	 */
 	public function show_php_error($severity, $message, $filepath, $line)
 	{
+		if (_is_api_request()) _api_error_response(500, $message . ' in ' . $filepath . ':' . $line);
 		$template_path = config_item('error_view_path');
 		if (empty($template_path))
 		{
@@ -136,6 +140,7 @@ class Errors
 	 */
 	public function show_database_error($message, $sql = '', $bindings = [], $exception = null, $template = 'error_db')
 	{
+		if (_is_api_request()) _api_error_response(500, 'Database error: ' . $message);
 		http_response_code(500);
 		
 		if (config_item('environment') !== 'development') {

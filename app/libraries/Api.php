@@ -421,9 +421,13 @@ class Api
                 }
             }
         }
+        $json = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            _api_error_response(500, 'Response encoding failed: ' . json_last_error_msg());
+        }
         http_response_code($code);
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        echo $json;
         exit;
     }
     /**
