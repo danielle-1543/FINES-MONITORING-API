@@ -19,7 +19,7 @@ The implementation follows this project's LavaLust MVC structure and its install
 | `.env.example` | Documents the server-only Xendit settings and optional frontend return URL. Contains no credentials. |
 | `console/test_xendit.php` | In-memory database tests for reservations, confirmation, duplicate events, expiry, authorization, failures, and unsafe links. Does not call Xendit or access application data. |
 
-Frontend changes are in the React repository: `Payments.jsx` adds test checkout/status/resume actions and explicit TEST receipts; `StudentAccount.jsx` recognizes `#payments` on return; `utils/xenditCheckout.js` validates hosted redirect URLs; `tests/xenditCheckout.test.mjs` checks unsafe links.
+Frontend changes are in the React repository: `Payments.jsx` handles checkout/status/resume actions, paginated payment history, and TEST receipts; `StudentPaymentWorkspace.jsx` shows per-organization/combined totals, five fines per organization page, eligible payment schedules, and the Pay fines form. The form appears only after Pay fines is selected; Xendit details appear only when Xendit is chosen as the method. `utils/studentPayments.js` groups totals, enforces displayed eligibility/pending restrictions, and paginates lists. `StudentAccount.jsx` recognizes `#payments` on return; `utils/xenditCheckout.js` validates hosted redirect URLs.
 
 ## Deploy and configure, in order
 
@@ -54,7 +54,7 @@ Frontend changes are in the React repository: `Payments.jsx` adds test checkout/
 
 7. Use **Test & Save**. An authenticated unrelated/sample event is acknowledged without creating a payment. An invalid verification token gets HTTP 401. A browser GET to this POST-only endpoint is not a valid webhook test. The webhook has no student JWT; do not put an API secret in its URL.
 8. Open the frontend, sign in as a demo student, and open Payments. Have the organization create a current/future payment window covering the demo fines. The backend enforces existing caps, discounts, organization scope, and pending reservations.
-9. Click **Pay ... via Xendit Test**, complete the simulated payment in Xendit, and return to Payments. The return itself never confirms payment. The verified webhook or **Check Xendit status** fetches server-to-server status and confirms the claim. Existing checkout can be resumed without creating another session.
+9. In **Payment schedules**, choose an open schedule and click **Pay fines** for the organization. Select **Xendit — test checkout** under Payment method, then **Continue to Xendit test checkout**. Complete the simulated payment in Xendit and return to Payments. The return itself never confirms payment. The verified webhook or **Check Xendit status** fetches server-to-server status and confirms the claim. Existing checkout can be resumed without creating another session. Unscheduled, closed, future, and pending-payment states explain why payment is unavailable; the student's current program determines eligible organizations. Historical fines outside the student's current organization scope remain visible but cannot be selected for payment.
 10. Check that the correct fine balance changes and that **View Receipt** shows **TEST PAYMENT** and a `TEST-FMS-...` receipt number.
 11. Replay the completed webhook in the Xendit dashboard. Confirm only one claim/receipt exists. Test expiry as well: the claim becomes CANCELLED and its reservation is released only after provider status is verified. An abandoned/cancel-return page alone does not release a still-active session.
 

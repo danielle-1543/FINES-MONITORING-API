@@ -113,6 +113,7 @@ class PaymentModel extends Model
         return [
             'fines' => $fines,
             'claims' => $this->claims('p.student_id', (int) $student['id']),
+            'organizations' => $this->student_payment_organizations($student),
             'summary' => [
                 'total_fines' => $this->decimal($total),
                 'paid_amount' => $this->decimal($paid),
@@ -121,6 +122,33 @@ class PaymentModel extends Model
                 'outstanding' => $this->decimal(max(0, $total - $paid - $adjustment - $discount))
             ]
         ];
+    }
+
+    private function student_payment_organizations(array $student): array
+    {
+        $organizations = $this->db->table('users')->select('id,organization_name')
+            ->where('role', '=', 'ORGANIZATION')->where('status', '=', 'ACTIVE')
+            ->order_by('organization_name', 'ASC')->get_all();
+        $eligible = [];
+        $now = $this->now();
+        foreach ($organizations as $organization) {
+            $id = (int) $organization['id'];
+            try {
+                $org = $this->org($id);
+            } catch (DomainException $error) {
+                if ($error->getCode() === 403) continue;
+                throw $error;
+            }
+            if (!$this->org_scope($org, $student['course'])) continue;
+            $schedules = $this->call->model('PaymentPeriodModel')->periods($id);
+            foreach ($schedules as &$schedule) {
+                $schedule['payment_window'] = $now < $schedule['opens_at'] ? 'UPCOMING'
+                    : ($now >= $schedule['closes_at'] ? 'CLOSED' : 'OPEN');
+            }
+            unset($schedule);
+            $eligible[] = ['id' => $id, 'organization_name' => $organization['organization_name'], 'schedules' => $schedules];
+        }
+        return $eligible;
     }
 
     private function own_fine(int $studentId, string $key): array
@@ -177,6 +205,10 @@ class PaymentModel extends Model
                 $org = $this->org((int) $orgId);
                 if (!$this->org_scope($org, $student['course'])) {
                     throw new DomainException('Organization does not cover your program.', 403);
+                }
+                if ($this->db->table('payment_claims')->where('student_id', '=', $student['id'])
+                    ->where('org_user_id', '=', $orgId)->where('status', '=', 'PENDING')->count()) {
+                    throw new DomainException('A payment is already pending for this organization. Review or cancel the existing manual claim, or check the Xendit checkout status, before paying again.', 409);
                 }
                 $total = 0;
                 foreach ($this->fines((int) $student['id']) as $candidate) {

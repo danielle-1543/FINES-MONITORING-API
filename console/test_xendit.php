@@ -11,6 +11,7 @@ function lava_instance() { return $GLOBALS['xenditTestLava']; }
 require dirname(__DIR__) . '/app/libraries/XenditGateway.php';
 require dirname(__DIR__) . '/app/models/PaymentModel.php';
 require dirname(__DIR__) . '/app/models/XenditPaymentModel.php';
+require dirname(__DIR__) . '/app/models/PaymentPeriodModel.php';
 
 class FixtureDatabase extends Database {
     public function raw($query, $args = []) {
@@ -29,6 +30,8 @@ class FixturePayments extends PaymentModel {
                 if ($claim['status'] === 'PENDING') $pending += $claim['amount'];
             }
             $rows[] = ['fine_key' => $key, 'org_user_id' => 10, 'payment_window' => 'OPEN',
+                'fine_amount' => number_format($amount, 2, '.', ''), 'paid_amount' => number_format($paid, 2, '.', ''),
+                'cap_adjustment' => '0.00', 'discount_amount' => '0.00',
                 'pending_amount' => number_format($pending, 2, '.', ''),
                 'outstanding' => number_format($amount - $paid, 2, '.', ''),
                 'available_to_claim' => number_format($amount - $paid - $pending, 2, '.', '')];
@@ -62,8 +65,8 @@ function fixture(): array {
     $pdo = new PDO('sqlite::memory:');
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    $pdo->exec("CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,status TEXT); INSERT INTO users VALUES(1,'STUDENT','ACTIVE'),(10,'ORGANIZATION','ACTIVE');
-        CREATE TABLE students(id INTEGER PRIMARY KEY,user_id INTEGER,course TEXT,account_status TEXT,activation_status TEXT); INSERT INTO students VALUES(2,1,'BSIT','ACTIVE','ACTIVATED');
+    $pdo->exec("CREATE TABLE users(id INTEGER PRIMARY KEY,role TEXT,status TEXT,organization_name TEXT); INSERT INTO users VALUES(1,'STUDENT','ACTIVE',NULL),(10,'ORGANIZATION','ACTIVE','CCS'),(20,'ORGANIZATION','ACTIVE','USG'),(30,'ORGANIZATION','ACTIVE','Business'),(40,'ORGANIZATION','INACTIVE','Inactive');
+        CREATE TABLE students(id INTEGER PRIMARY KEY,user_id INTEGER,course TEXT,account_status TEXT,activation_status TEXT,full_name TEXT,student_number TEXT); INSERT INTO students VALUES(2,1,'BSIT','ACTIVE','ACTIVATED','Demo Student','DEMO-1');
         CREATE TABLE payment_claims(id INTEGER PRIMARY KEY AUTOINCREMENT,student_id INTEGER,org_user_id INTEGER,fine_key TEXT,amount TEXT,method TEXT,reference_number TEXT,proof_file TEXT,proof_mime TEXT,submitted_at TEXT,status TEXT,reviewed_at TEXT,review_note TEXT,reviewed_by INTEGER,receipt_number TEXT UNIQUE);
         CREATE TABLE payment_claim_items(claim_id INTEGER,fine_key TEXT,amount TEXT,PRIMARY KEY(claim_id,fine_key));
         CREATE TABLE xendit_payments(claim_id INTEGER PRIMARY KEY,reference_id TEXT UNIQUE,session_id TEXT UNIQUE,payment_id TEXT UNIQUE,checkout_url TEXT,state TEXT,mode TEXT,created_at TEXT,updated_at TEXT);");
@@ -74,13 +77,32 @@ function fixture(): array {
     $model = new XenditPaymentModel();
     $call = new class($payments, $gateway) {
         public function __construct(public $payments, public $gateway) {}
-        public function model($name) { return $name === 'PaymentModel' ? $this->payments : new class { public function organization($id) { return ['allowed_courses' => null]; } }; }
+        public function model($name) {
+            if ($name === 'PaymentModel') return $this->payments;
+            if ($name === 'PaymentPeriodModel') return new class {
+                public function periods($id) { return [['id' => $id, 'label' => 'Demo', 'opens_at' => '2000-01-01 00:00:00', 'closes_at' => '2099-01-01 00:00:00']]; }
+            };
+            return new class { public function organization($id) { return ['allowed_courses' => $id === 30 ? ['BSBA'] : null]; } };
+        }
         public function library($name) { return $this->gateway; }
     };
     $GLOBALS['xenditTestLava'] = (object) ['db' => $db, 'call' => $call];
     return [$pdo, $payments, $gateway, $model];
 }
 
+[$pdo, $payments, $gateway, $model] = fixture();
+$schedule = ['id' => 50, 'org_user_id' => 10, 'label' => 'Demo Semester', 'semester_start' => '2026-01-01',
+    'semester_end' => '2026-12-31', 'opens_at' => '2026-11-13 08:00:00', 'closes_at' => '2026-11-20 17:00:00', 'cap_amount' => null];
+$scheduledFine = ['org_user_id' => 10, 'fine_key' => 'test-fine', 'recorded_at' => '2026-11-01 08:00:00',
+    'fine_amount' => '30.00', 'paid_amount' => '0.00', 'pending_amount' => '0.00'];
+$calculated = PaymentPeriodModel::calculate([$scheduledFine], [$schedule], '2026-11-13 08:00:00');
+check($calculated[0]['payment_period_id'] === 50 && $calculated[0]['payment_window'] === 'OPEN', 'schedule metadata links each fine to its payment period at opening boundary');
+check(PaymentPeriodModel::calculate([$scheduledFine], [$schedule], '2026-11-20 17:00:00')[0]['payment_window'] === 'CLOSED', 'schedule is closed at its closing boundary');
+$overview = $payments->overview(1);
+check(array_column($overview['organizations'], 'id') === [10, 20], 'payment choices include only active organizations covering student program');
+check($overview['organizations'][0]['schedules'][0]['payment_window'] === 'OPEN', 'student overview includes payment schedules and window status');
+$pdo->exec("INSERT INTO payment_claims(student_id,org_user_id,fine_key,amount,method,status) VALUES(2,10,'removed-fine','1.00','CASH','PENDING')");
+denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'method' => 'CASH', 'organization_id' => 10, 'amount' => '100.00']), 409, 'pending claim on a historical fine still blocks duplicate organization payment');
 [$pdo, $payments, $gateway, $model] = fixture();
 $checkout = $model->checkout(1, 10);
 denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'method' => 'XENDIT_TEST', 'organization_id' => 10, 'amount' => '0.01']), 422, 'manual endpoint cannot select internal Xendit method');

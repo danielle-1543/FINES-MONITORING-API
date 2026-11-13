@@ -142,6 +142,7 @@ class PaymentPeriodModel extends Model
         foreach ($rows as $index => &$row) {
             $row['discount_amount'] = $row['discount_amount'] ?? '0.00';
             $row['semester_label'] = null;
+            $row['payment_period_id'] = null;
             $row['payment_window'] = 'NOT_SCHEDULED';
             $row['opens_at'] = null;
             $row['closes_at'] = null;
@@ -155,6 +156,7 @@ class PaymentPeriodModel extends Model
                     continue;
                 }
                 $row['semester_label'] = $period['label'];
+                $row['payment_period_id'] = (int) $period['id'];
                 $row['opens_at'] = $period['opens_at'];
                 $row['closes_at'] = $period['closes_at'];
                 $row['payment_window'] = $now < $period['opens_at'] ? 'UPCOMING' : ($now >= $period['closes_at'] ? 'CLOSED' : 'OPEN');
