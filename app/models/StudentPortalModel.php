@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once dirname(__DIR__) . '/libraries/CalendarDatePolicy.php';
 
 class StudentPortalModel extends StudentAccountModel
 {
@@ -202,6 +203,7 @@ class StudentPortalModel extends StudentAccountModel
             if (!$date || $date->format('Y-m-d') !== $value) {
                 throw new DomainException('Enter valid date filters.', 422);
             }
+            CalendarDatePolicy::assertNotPastDay($value, 'History filter date');
             $where[] = $key === 'from' ? 'recorded_at >= ?' : 'recorded_at < ?';
             $params[] = $key === 'from' ? $value . ' 00:00:00' : $date->modify('+1 day')->format('Y-m-d') . ' 00:00:00';
         }

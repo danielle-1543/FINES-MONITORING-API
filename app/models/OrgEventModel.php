@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once dirname(__DIR__) . '/libraries/CalendarDatePolicy.php';
 
 class OrgEventModel extends Model
 {
@@ -179,6 +180,8 @@ class OrgEventModel extends Model
         $type = $this->text($data, 'event_type');
         $start = $this->datetime($this->text($data, 'scan_starts_at'));
         $end = $this->datetime($this->text($data, 'scan_ends_at'));
+        CalendarDatePolicy::assertNotPastDay($start, 'Scanning start date');
+        CalendarDatePolicy::assertNotPastDay($end, 'Scanning end date');
         if ($name === '' || mb_strlen($name) > 150 || !in_array($type, [
             'ATTENDANCE',
             'VIOLATION'

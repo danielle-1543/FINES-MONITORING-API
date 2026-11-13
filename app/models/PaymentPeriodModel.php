@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once dirname(__DIR__) . '/libraries/CalendarDatePolicy.php';
 
 class PaymentPeriodModel extends Model
 {
@@ -31,6 +32,8 @@ class PaymentPeriodModel extends Model
     {
         $opens = $this->date_value($input['opens_at'] ?? null, true);
         $closes = $this->date_value($input['closes_at'] ?? null, true);
+        CalendarDatePolicy::assertNotPastDay($opens, 'Payment opening date');
+        CalendarDatePolicy::assertNotPastDay($closes, 'Payment closing date');
         if ($opens >= $closes) {
             throw new DomainException('Payment closing time must be after opening time.', 422);
         }
