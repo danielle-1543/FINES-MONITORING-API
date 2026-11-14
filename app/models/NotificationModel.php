@@ -206,39 +206,22 @@ class NotificationModel extends Model
         )->fetchColumn();
     }
 
-    public function inbox(int $userId, int $requestedPage): array
+    public function inbox(int $userId, int $requestedPage, string $filter = 'all'): array
     {
-        $total = (int) $this->db->raw(
-            'SELECT COUNT(*)
-             FROM student_notifications
-             WHERE user_id = ?',
-            [$userId]
-        )->fetchColumn();
-
+        if (!in_array($filter, ['all', 'unread', 'read'], true)) throw new DomainException('Choose All, Unread or Read notifications.', 422);
+        $query = function () use ($userId, $filter) {
+            $query = $this->db->table('student_notifications')->where('user_id', $userId);
+            if ($filter === 'unread') $query->where_null('read_at');
+            if ($filter === 'read') $query->where_not_null('read_at');
+            return $query;
+        };
+        $total = $query()->count();
         $pages = max(1, (int) ceil($total / 20));
         $page = min(max(1, $requestedPage), $pages);
-        $offset = ($page - 1) * 20;
-
-        $items = $this->db->raw(
-            'SELECT
-                id, title, message, kind,
-                recorded_at, created_at, read_at
-             FROM student_notifications
-             WHERE user_id = ?
-             ORDER BY id DESC
-             LIMIT 20 OFFSET ' . $offset,
-            [$userId]
-        )->fetchAll(PDO::FETCH_ASSOC);
-
-        return [
-            'data' => $items,
-            'unread_count' => $this->unread_count($userId),
-            'pagination' => [
-                'page' => $page,
-                'pages' => $pages,
-                'total' => $total,
-            ],
-        ];
+        $items = $query()->select('id,title,message,kind,recorded_at,created_at,read_at')
+            ->order_by('id', 'DESC')->limit(20, ($page - 1) * 20)->get_all();
+        return ['data' => $items, 'unread_count' => $this->unread_count($userId), 'filter' => $filter,
+            'pagination' => ['page' => $page, 'pages' => $pages, 'total' => $total]];
     }
 
     public function mark_read(int $userId, array $input): void

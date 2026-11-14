@@ -104,7 +104,8 @@ class StudentAccountController extends Controller
             return $this->call->model('NotificationModel')
                 ->inbox(
                     $id,
-                    max(1, (int) ($_GET['page'] ?? 1))
+                    max(1, (int) ($_GET['page'] ?? 1)),
+                    is_string($_GET['filter'] ?? null) ? $_GET['filter'] : 'all'
                 );
         });
     }
