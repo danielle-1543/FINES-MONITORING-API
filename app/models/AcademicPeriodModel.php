@@ -24,7 +24,7 @@ class AcademicPeriodModel extends Model
         if (($period['starts_on'] && $day < $period['starts_on']) || ($period['ends_on'] && $day > $period['ends_on'])) throw new DomainException('The record date must fall within the selected academic semester.', 422);
         return (int) $period['id'];
     }
-    public function save(array $input): array
+    public function save(array $input, int $adminId = 0): array
     {
         $year = filter_var($input['year_start'] ?? null, FILTER_VALIDATE_INT);
         $term = $input['term'] ?? '';
@@ -58,13 +58,61 @@ class AcademicPeriodModel extends Model
             if ($current && $status !== 'OPEN') throw new DomainException('The current semester must be open.', 422);
             $duplicate = $this->db->table('academic_periods')->select('id')->where('id', '<>', $id)->where('year_start', '=', $year)->where('term', '=', $term)->get();
             if ($duplicate) throw new DomainException('This academic year and semester already exists.', 409);
+            $previous = $this->current();
+            if ($previous && (int) $previous['id'] === $id && (!$current || $status !== 'OPEN')) throw new DomainException('Change to another semester first. The current semester cannot be closed on its own.', 409);
+            $switching = $current && (!$previous || (int) $previous['id'] !== $id);
+            $students = [];
+            $label = $year . '–' . ($year + 1) . ' · ' . $terms[$term];
+            if ($switching) {
+                // Match the organization-first lock order used by scans and payments.
+                $this->db->raw("SELECT id FROM users WHERE role='ORGANIZATION' ORDER BY id FOR UPDATE");
+                $students = $this->db->raw('SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students ORDER BY id FOR UPDATE')->fetchAll(PDO::FETCH_ASSOC);
+                $fingerprint = hash('sha256', json_encode([$id, $year, $term, $previous, $students], JSON_THROW_ON_ERROR));
+                if (($input['preview'] ?? null) === true) {
+                    $this->db->commit();
+                    return ['preview' => true, 'fingerprint' => $fingerprint, 'from' => $previous['label'] ?? null, 'to' => $label, 'students' => count($students)];
+                }
+                if (($input['preview'] ?? null) !== false || !is_string($input['fingerprint'] ?? null) || !hash_equals($fingerprint, $input['fingerprint'])) throw new DomainException('Review and confirm the semester change first. Student data or the current semester may have changed.', 409);
+            }
             if ($current) $this->db->table('academic_periods')->where('is_current', '=', 1)->update(['is_current' => 0]);
-            $values = ['year_start' => $year, 'term' => $term, 'label' => $year . '–' . ($year + 1) . ' · ' . $terms[$term],
+            $values = ['year_start' => $year, 'term' => $term, 'label' => $label,
                 'starts_on' => $input['starts_on'], 'ends_on' => $input['ends_on'], 'status' => $status, 'is_current' => $current];
             if ($id) $this->db->table('academic_periods')->where('id', '=', $id)->update($values);
             else { $this->db->table('academic_periods')->insert($values); $id = (int) $this->db->last_id(); }
-            $this->db->commit(); return ['id' => $id];
+            if ($switching) {
+                if ($previous) $this->db->table('academic_periods')->where('id', $previous['id'])->update(['is_current' => 0, 'status' => 'CLOSED']);
+                $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+                $batch = bin2hex(random_bytes(16));
+                $periodLabels = array_column($this->periods(), 'label', 'id');
+                foreach ($students as $student) {
+                    $before = $student + ['academic_period_label' => $periodLabels[$student['current_academic_period_id'] ?? 0] ?? 'Not assigned'];
+                    $after = array_replace($before, ['current_academic_period_id' => $id, 'academic_period_label' => $label]);
+                    $this->db->table('student_change_history')->insert(['student_id' => $student['id'], 'changed_by' => $adminId,
+                        'batch_id' => $batch, 'reason' => 'SEMESTER_ROLLOVER', 'note' => 'Semester change: ' . ($previous['label'] ?? 'Not configured') . ' to ' . $label,
+                        'before_values' => json_encode($before, JSON_THROW_ON_ERROR), 'after_values' => json_encode($after, JSON_THROW_ON_ERROR), 'changed_at' => $now]);
+                    $this->db->table('students')->where('id', $student['id'])->update(['current_academic_period_id' => $id]);
+                }
+                $counts = [];
+                foreach (['org_events', 'org_scan_records', 'org_violation_records', 'payment_claims'] as $table) {
+                    $counts[$table] = $previous ? $this->db->table($table)->where('academic_period_id', $previous['id'])->count() : 0;
+                }
+                $this->db->table('academic_record_changes')->insert(['changed_by' => $adminId, 'academic_period_id' => $id,
+                    'source_kind' => 'SEMESTER_CHANGE', 'source_id' => $previous['id'] ?? 0,
+                    'change_details' => json_encode(['from' => $previous, 'to' => $values + ['id' => $id], 'students' => $students, 'records' => $counts], JSON_THROW_ON_ERROR), 'changed_at' => $now]);
+            }
+            $this->db->commit(); return ['id' => $id, 'students_updated' => count($students)];
         } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
+    }
+    public function semester_history(): array
+    {
+        $rows = $this->db->table('academic_record_changes')->select('id,changed_at,change_details')
+            ->where('source_kind', 'SEMESTER_CHANGE')->order_by('id', 'DESC')->get_all();
+        foreach ($rows as &$row) {
+            $row['snapshot'] = json_decode($row['change_details'], true, 512, JSON_THROW_ON_ERROR);
+            unset($row['change_details']);
+        }
+        unset($row);
+        return $rows;
     }
     public function require_student_period(int $studentId, ?int $periodId): void
     {

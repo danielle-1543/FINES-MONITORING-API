@@ -23,7 +23,8 @@ class AcademicController extends Controller
         catch (Throwable $error) { error_log('Academic API: ' . get_class($error)); $this->api->respond_error('Unable to process academic records. Check that the academic_periods migration is applied.', 500); }
     }
     public function periods(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->periods()); }
-    public function save(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->save($input), true); }
+    public function save(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->save($input, (int) $auth['sub']), true); }
+    public function history(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->semester_history(), true); }
     public function archives(): void { $this->run('GET', fn ($auth) => $this->call->model('FineArchiveModel')->report($auth, $_GET)); }
     public function legacy(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->legacy_sources(), true); }
     public function classify(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->classify($input, (int) $auth['sub']), true); }

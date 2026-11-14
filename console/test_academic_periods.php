@@ -39,7 +39,11 @@ $GLOBALS['xenditTestLava']->call = new class($academic, $payments, $schedule, $o
         return $this->fallback->model($name);
     }
 };
-$first = $academic->save(['year_start' => 2026, 'term' => 'FIRST', 'is_current' => true])['id'];
+function saveAcademic($academic, $input) {
+    $preview = $academic->save($input + ['preview' => true], 99);
+    return !empty($preview['preview']) ? $academic->save($input + ['preview' => false, 'fingerprint' => $preview['fingerprint']], 99) : $preview;
+}
+$first = saveAcademic($academic, ['year_start' => 2026, 'term' => 'FIRST', 'is_current' => true])['id'];
 check($academic->current()['starts_on'] === null && $academic->current()['ends_on'] === null, 'semester setup requires no date fields');
 denied(fn () => $academic->save(['year_start' => 2026, 'term' => 'FIRST']), 409, 'duplicate semesters rejected');
 $pdo->exec("UPDATE students SET year_level='1st Year',section='F1',current_academic_period_id=$first WHERE id=2");
@@ -55,7 +59,7 @@ $notifications->record_scan(1);
 check($pdo->query('SELECT * FROM student_notifications')->fetch() === $originalNotification && (int) $pdo->query('SELECT COUNT(*) FROM student_notifications')->fetchColumn() === 1, 'legacy classification preserves notification ID and push idempotency without duplicates');
 $old = $payments->fines(2)[0];
 check($old['payable_amount'] === '50.00' && (int) $old['legacy_assessment'] === 1, 'classifying a legacy fine preserves its original cap');
-$second = $academic->save(['year_start' => 2026, 'term' => 'SECOND', 'is_current' => true])['id'];
+$second = saveAcademic($academic, ['year_start' => 2026, 'term' => 'SECOND', 'is_current' => true])['id'];
 $update = ['student_ids' => [2], 'reason' => 'SEMESTER_CHANGE', 'changes' => ['current_academic_period_id' => (string) $second, 'year_level' => '2nd Year', 'section' => 'F2'], 'preview' => true];
 $review = $studentsModel->update_students($update, 99);
 $studentsModel->update_students(array_replace($update, ['preview' => false, 'fingerprint' => $review['fingerprint']]), 99);
@@ -146,4 +150,34 @@ check($empty['current_period'] === null && !$empty['records'] && !$empty['organi
 $pdo->exec("UPDATE academic_periods SET is_current=1,status='CLOSED' WHERE id=$second");
 check($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['current_period'] === null, 'closed current semester cannot expose closed-period student archives');
 check($archive->dashboard_statistics(1) === ['current_period' => null, 'summary' => ['total_violations' => 0, 'total_fines' => '0.00', 'paid_amount' => '0.00', 'unpaid_fines' => '0.00']], 'dashboard returns no current period and zero statistics when the semester is closed');
+$pdo->exec("UPDATE academic_periods SET status='OPEN',is_current=1 WHERE id=$second");
+$nextSemester = ['year_start' => 2027, 'term' => 'FIRST', 'is_current' => true];
+$beforeStudents = $pdo->query('SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students ORDER BY id')->fetchAll();
+$preserved = [];
+foreach (['org_events','org_scan_records','org_violation_records','payment_claims','payment_claim_items','student_notifications'] as $table) $preserved[$table] = $pdo->query('SELECT * FROM ' . $table)->fetchAll();
+denied(fn () => $academic->save($nextSemester, 99), 409, 'semester rollover requires explicit preview and confirmation');
+$rolloverPreview = $academic->save($nextSemester + ['preview' => true], 99);
+check((int) $academic->current()['id'] === $second && count($academic->periods()) === 2, 'cancelled rollover preview leaves current semester, students and new period unchanged');
+$pdo->exec("UPDATE students SET section='F9' WHERE id=3");
+denied(fn () => $academic->save($nextSemester + ['preview' => false, 'fingerprint' => $rolloverPreview['fingerprint']], 99), 409, 'rollover rejects a stale preview after student data changes');
+$pdo->exec("UPDATE students SET section='F3' WHERE id=3");
+$rolloverPreview = $academic->save($nextSemester + ['preview' => true], 99);
+$rollover = $academic->save($nextSemester + ['preview' => false, 'fingerprint' => $rolloverPreview['fingerprint']], 99);
+check($rollover['students_updated'] === count($beforeStudents) && (int) $pdo->query('SELECT COUNT(*) FROM students WHERE current_academic_period_id=' . $rollover['id'])->fetchColumn() === count($beforeStudents), 'confirmed rollover updates every student to the new semester');
+check($academic->period($second)['status'] === 'CLOSED', 'rollover closes the previous semester');
+$saved = $academic->semester_history()[0]['snapshot'];
+check($saved['students'] === $beforeStudents && (int) $saved['from']['id'] === $second, 'previous semester records retain exact student data from before rollover');
+foreach ($preserved as $table => $rows) check($rows === $pdo->query('SELECT * FROM ' . $table)->fetchAll(), 'rollover preserves original rows in ' . $table);
+$failedSwitch = ['year_start' => 2027, 'term' => 'SECOND', 'is_current' => true];
+$failurePreview = $academic->save($failedSwitch + ['preview' => true], 99);
+$pdo->exec("CREATE TRIGGER prevent_rollover_history BEFORE INSERT ON student_change_history WHEN NEW.reason='SEMESTER_ROLLOVER' BEGIN SELECT RAISE(ABORT,'simulated audit failure'); END");
+try {
+    $academic->save($failedSwitch + ['preview' => false, 'fingerprint' => $failurePreview['fingerprint']], 99);
+    throw new RuntimeException('Failed rollover unexpectedly committed.');
+} catch (PDOException $expected) {
+    check((int) $academic->current()['id'] === $rollover['id'] && count($academic->periods()) === 3
+        && (int) $pdo->query('SELECT COUNT(*) FROM students WHERE current_academic_period_id=' . $rollover['id'])->fetchColumn() === count($beforeStudents),
+        'audit failure rolls back period creation, closing and all student changes together');
+}
+$pdo->exec('DROP TRIGGER prevent_rollover_history');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

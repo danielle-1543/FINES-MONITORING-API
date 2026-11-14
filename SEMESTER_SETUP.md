@@ -44,30 +44,25 @@ existing Philippine-time no-past-date policy.
 
 ## Each new semester
 
-Create the next academic period and make it current. For returning students,
-select the students in Student Management and use **Multiple edits** to update
-semester, year level and section together. For one student, use **Edit Profile**.
-Review the before/after changes and confirm. Accounts and QR tokens remain the
-same. Original fine, attendance and payment semester references never change.
-The student list filters the semester saved directly in the student data.
+Create the next academic period with Make current selected, or use Set current
+on an existing period. The system previews the old/new semester and student count,
+then asks for confirmation. Cancel makes no changes. A stale preview is rejected
+if the current semester or student data changed before confirmation.
 
-New registration and bulk import save that semester directly on the student.
-Changing the global current period does not overwrite existing student profiles.
-Event rosters/scanning compare that saved student semester with the event period.
-Closed semesters cannot be chosen for new records. No separate enrollment records
-are read or written by this workflow. The former enrollment table is left unused
-for schema compatibility; no database data is dropped by this code change.
+On confirmation, one transaction saves student before/after history and a
+before-change snapshot, closes the previous current semester, switches the current
+period and updates ALL students to the new semester (including pending/inactive
+registrations). Year level, section, course, accounts and QR codes stay unchanged.
+Use Edit Profile or Multiple edits for year-level/section changes separately.
+Original events, attendance, fine amounts, caps, payment allocations and
+notifications retain their original IDs and semester references. Existing unpaid
+balances are preserved; switching semesters does not forgive or recreate fines.
 
-## Existing records
-
-Old records initially appear under **Legacy / Unassigned**. In Academic Settings,
-load legacy records, select an ended event or standalone violation and its correct
-semester, preview, then confirm classification. Review this against your actual
-school records; no dates or semesters are inferred automatically. Classification
-is audited and retains source IDs, original amounts, payment allocations, existing
-cap rules and notification/push idempotency keys. Legacy cap rules stay separate
-from newly created academic-period schedules. Existing legacy payment windows can
-be edited to today/future collection times without changing their cap coverage.
+Academic Settings → Previous semester records replaces legacy-classification
+controls. Expand a saved change to see the student data from before it and counts
+of preserved operational records. This history starts when the confirmed rollover
+feature is first used; no earlier student snapshots are guessed retroactively.
+The current period cannot be closed alone: switch to another period instead.
 
 ## Payments and reports
 
