@@ -177,6 +177,7 @@ class OrganizationController extends Controller
                         $absences += $amountCents;
                     }
                 }
+                $student['academic_period_label'] = $balance['academic_period_label'] ?? $student['academic_period_label'];
                 $rows[] = $student + [
                     'violation_fines' => $violations / 100,
                     'absence_fines' => $absences / 100,

@@ -81,6 +81,11 @@ class AdminOrganizationModel extends Model
             (EXISTS(SELECT 1 FROM org_events e WHERE e.org_user_id=users.id) OR EXISTS(SELECT 1 FROM org_violation_types v WHERE v.org_user_id=users.id) OR EXISTS(SELECT 1 FROM payment_claims p WHERE p.org_user_id=users.id)) scope_locked
             FROM users WHERE {$where} ORDER BY organization_name,username,id" . ($export ? '' : " LIMIT 10 OFFSET {$offset}");
         $rows = $this->db->raw($sql, $params)->fetchAll(PDO::FETCH_ASSOC);
+        if ($export) {
+            $current = $this->call->model('AcademicPeriodModel')->current();
+            foreach ($rows as &$row) $row['academic_period_label'] = ($current['label'] ?? 'No current academic period') . ' (report context; organization master account)';
+            unset($row);
+        }
         $catalog = $this->call->model('ProgramCatalogModel')->catalog();
         $groups = [];
         foreach ($catalog['organization_course_groups'] as $college => $programs) {

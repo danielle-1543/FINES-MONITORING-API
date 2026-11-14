@@ -96,6 +96,19 @@ worker configuration is changed by this feature.
 
 ## LavaLust structure and checks
 
+Generated Excel reports and receipts include an Academic Year / Semester column.
+Historical rows use their original source period; aggregate reports list every
+contributing period. Organization master-account exports mark the period as report
+context. Missing/legacy periods are labelled rather than guessed from today's
+current setting. QR PNG downloads and each QR/activation PDF card also print the
+student's academic period without altering the encoded QR token. Original uploaded
+payment proofs are retained byte-for-byte, with period information in download names.
+
+Registration/import display the open current period as plain text, controlled by
+Academic Settings. History/report filters and explicit student corrections remain
+selectable. New import templates include the period and reject a different period;
+registration is serialized with rollover to reject stale period submissions.
+
 Controllers authorize and dispatch to models. Ordinary reads/writes use LavaLust
 Query Builder (`table`, `select`, `where`, `join`, `insert`, `update`). Bound SQL is
 limited to UNION/derived financial reports, atomic INSERT SELECT/IGNORE and row

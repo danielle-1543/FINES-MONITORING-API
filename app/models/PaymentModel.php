@@ -93,7 +93,9 @@ class PaymentModel extends Model
             ->group_by(explode(', ', $columns))
             ->order_by('p.id', 'DESC')
             ->get_all();
+        $periodLabels = array_column($this->call->model('AcademicPeriodModel')->periods(), 'label', 'id');
         foreach ($rows as &$row) {
+            $row['academic_period_label'] = $periodLabels[$row['academic_period_id'] ?? 0] ?? 'Legacy / Mixed allocation';
             $row['has_proof'] = $row['proof_file'] !== null ? 1 : 0;
             unset($row['proof_file']);
         }
@@ -400,11 +402,11 @@ class PaymentModel extends Model
         $sql = "SELECT s.id student_id,s.student_number,s.full_name,s.course,s.year_level,s.section,f.*,
             COALESCE(p.paid_amount,0) paid_amount,COALESCE(p.pending_amount,0) pending_amount
             FROM (SELECT CONCAT('scan-',r.id) fine_key,r.student_id fine_student_id,e.org_user_id,
-                CASE WHEN r.record_type='ATTENDANCE' THEN 'Attendance fine' ELSE COALESCE(v.name,'Violation') END violation_name,e.name event_name,r.fine_amount,r.recorded_at,r.record_type
+                CASE WHEN r.record_type='ATTENDANCE' THEN 'Attendance fine' ELSE COALESCE(v.name,'Violation') END violation_name,e.name event_name,r.fine_amount,r.recorded_at,r.record_type,r.academic_period_id,r.legacy_assessment
                 FROM org_scan_records r JOIN org_events e ON e.id=r.event_id
                 LEFT JOIN org_violation_types v ON v.id=e.violation_type_id WHERE (r.record_type='VIOLATION' OR r.fine_amount>0) AND e.org_user_id=?
                 UNION ALL SELECT CONCAT('violation-',r.id),r.student_id,r.org_user_id,r.violation_name,
-                COALESCE(e.name,'Standalone violation'),r.fine_amount,r.recorded_at,'VIOLATION' FROM org_violation_records r
+                COALESCE(e.name,'Standalone violation'),r.fine_amount,r.recorded_at,'VIOLATION',r.academic_period_id,r.legacy_assessment FROM org_violation_records r
                 LEFT JOIN org_events e ON e.id=r.event_id WHERE r.org_user_id=?) f
             JOIN students s ON s.id=f.fine_student_id
             LEFT JOIN (SELECT fine_key,student_id,SUM(CASE WHEN status='CONFIRMED' THEN amount ELSE 0 END) paid_amount,
@@ -463,6 +465,7 @@ class PaymentModel extends Model
                 'discount_amount',
                 'payable_amount',
                 'semester_label',
+                'academic_period_label',
                 'recorded_at',
                 'record_type'
             ])) + ['outstanding' => $this->decimal($balance)];
@@ -477,6 +480,7 @@ class PaymentModel extends Model
             'outstanding' => 0
         ];
         foreach ($students as $student) {
+            $student['academic_period_label'] = implode(' | ', array_unique(array_column($student['fines'], 'academic_period_label')));
             $student['payment_status'] = $student['balance'] === 0 ? 'PAID' : 'UNPAID';
             if ($status !== '' && $student['payment_status'] !== $status) {
                 continue;
@@ -644,6 +648,15 @@ class PaymentModel extends Model
             $claim['fine_key'] = 'All fines (' . $count . ' items)';
         }
         $claim['academic_period_label'] = !empty($claim['academic_period_id']) ? $this->call->model('AcademicPeriodModel')->period((int) $claim['academic_period_id'])['label'] : 'Legacy / Mixed allocation';
+        if (empty($claim['academic_period_id'])) {
+            $keys = $this->db->table('payment_claim_items')->select('fine_key')->where('claim_id', $claimId)->get_all(PDO::FETCH_COLUMN);
+            if (!$keys && !$count) $keys = [$claim['fine_key']];
+            $labels = [];
+            foreach ($this->fines((int) $claim['student_id']) as $fine) {
+                if (in_array($fine['fine_key'], $keys, true)) $labels[] = $fine['academic_period_label'] ?? 'Legacy / Unassigned';
+            }
+            if ($labels) $claim['academic_period_label'] = implode(' | ', array_unique($labels));
+        }
         return $claim;
     }
 }

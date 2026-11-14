@@ -460,9 +460,16 @@ class StudentModel extends Model
 
     public function register_for_period(array $record, int $periodId): bool
     {
-        $this->call->model('AcademicPeriodModel')->period($periodId, true);
-        $record['current_academic_period_id'] = $periodId;
-        return $this->register_student_record($record);
+        $this->db->transaction();
+        try {
+            // Serialize with semester rollover so an import cannot insert the old period after a switch.
+            $this->db->raw("SELECT id FROM users WHERE role='ADMIN' ORDER BY id LIMIT 1 FOR UPDATE");
+            $this->call->model('AcademicPeriodModel')->registration_period($periodId);
+            $record['current_academic_period_id'] = $periodId;
+            $result = $this->register_student_record($record);
+            if (!$result) throw new RuntimeException('Student registration failed.');
+            $this->db->commit(); return true;
+        } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
     }
 
     public function delete_pending_student(int $id): bool

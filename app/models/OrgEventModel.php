@@ -406,7 +406,7 @@ class OrgEventModel extends Model
             array_push($params,...array_fill(0, 3, '%' . $search . '%'));
         }
         return [
-            "SELECT s.id,s.student_number,s.full_name,s.course,s.year_level,s.section,s.account_status,s.activation_status,s.registered_at FROM students s WHERE {$where}",
+            "SELECT s.id,s.student_number,s.full_name,s.course,s.year_level,s.section,s.account_status,s.activation_status,s.registered_at,COALESCE(ap.label,'Not assigned') academic_period_label FROM students s LEFT JOIN academic_periods ap ON ap.id=s.current_academic_period_id WHERE {$where}",
             $params
         ];
     }

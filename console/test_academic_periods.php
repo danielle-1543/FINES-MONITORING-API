@@ -99,6 +99,10 @@ check($personal['current_period']['id'] === $second && count($personal['records'
 check(array_column($personal['records'], 'id') === ['violation-50', 'scan-90', 'scan-2'], 'one chronological list includes zero-fine absences and keeps fully paid fines visible');
 check(count($personal['organizations']) === 2 && !isset($personal['payments']), 'student archive has dynamic organization breakdown without allocation tables');
 check($personal['summary'] === ['original' => '120.00', 'cap_adjustment' => '30.00', 'discount' => '5.00', 'payable' => '85.00', 'paid' => '70.00', 'outstanding' => '15.00'], 'personal summary applies separate caps and vouchers; pending/cancelled payments never reduce balance');
+$organizationExport = $payments->organization_fines(10, [], true);
+$exportedFines = array_column($organizationExport['data'][0]['fines'], null, 'fine_key');
+check($exportedFines['scan-2']['cap_adjustment'] === '20.00' && $exportedFines['scan-2']['academic_period_label'] === $academic->period($second)['label'], 'organization exports preserve original semester and apply the same cap as the student ledger');
+check(str_contains($organizationExport['data'][0]['academic_period_label'], $academic->period($first)['label']) && str_contains($organizationExport['data'][0]['academic_period_label'], $academic->period($second)['label']), 'cross-semester aggregate exports list every contributing semester instead of labelling them current');
 $statistics = $archive->dashboard_statistics(1);
 check($statistics['current_period']['id'] === $second && $statistics['summary'] === ['total_violations' => 1, 'total_fines' => '120.00', 'paid_amount' => '70.00', 'unpaid_fines' => '15.00'], 'dashboard statistics count current violations separately from absences and reuse verified adjusted balances');
 $pdo->exec("INSERT INTO payment_claims(student_id,org_user_id,fine_key,amount,method,status) VALUES(2,10,'scan-1','5.00','CASH','CONFIRMED')");
@@ -165,6 +169,7 @@ $rolloverPreview = $academic->save($nextSemester + ['preview' => true], 99);
 $rollover = $academic->save($nextSemester + ['preview' => false, 'fingerprint' => $rolloverPreview['fingerprint']], 99);
 check($rollover['students_updated'] === count($beforeStudents) && (int) $pdo->query('SELECT COUNT(*) FROM students WHERE current_academic_period_id=' . $rollover['id'])->fetchColumn() === count($beforeStudents), 'confirmed rollover updates every student to the new semester');
 check($academic->period($second)['status'] === 'CLOSED', 'rollover closes the previous semester');
+denied(fn () => $studentsModel->register_for_period(['student_number' => 'STALE'], $second), 409, 'registration rejects a stale period after Academic Settings rollover');
 $saved = $academic->semester_history()[0]['snapshot'];
 check($saved['students'] === $beforeStudents && (int) $saved['from']['id'] === $second, 'previous semester records retain exact student data from before rollover');
 foreach ($preserved as $table => $rows) check($rows === $pdo->query('SELECT * FROM ' . $table)->fetchAll(), 'rollover preserves original rows in ' . $table);

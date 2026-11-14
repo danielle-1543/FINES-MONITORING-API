@@ -17,6 +17,13 @@ class AcademicPeriodModel extends Model
     {
         return $this->db->table('academic_periods')->where('is_current', '=', 1)->get() ?: null;
     }
+    public function registration_period(int $requested): array
+    {
+        $current = $this->current();
+        if (!$current || $current['status'] !== 'OPEN') throw new DomainException('Configure an open current academic year and semester before registering students.', 409);
+        if ($requested !== (int) $current['id']) throw new DomainException('The current academic period changed. Refresh before registering or importing students.', 409);
+        return $current;
+    }
     public function recording_period($requested, string $day): int
     {
         $period = $requested ? $this->period((int) $requested, true) : $this->current();

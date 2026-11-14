@@ -220,6 +220,7 @@ class PaymentController extends Controller
             return [
                 'data' => array_intersect_key($row, array_flip([
                     'receipt_number',
+                    'academic_period_label',
                     'full_name',
                     'student_number',
                     'organization_name',

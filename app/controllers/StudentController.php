@@ -142,6 +142,7 @@ class StudentController extends Controller
                 }
                 $students[] = array_intersect_key($student, array_flip([
                     'student_number',
+                    'academic_period_label',
                     'full_name',
                     'qr_token',
                     'activation_code'
@@ -185,7 +186,7 @@ class StudentController extends Controller
         $this->admin(function () {
             $input = $this->input();
             $periodId = (int) ($input['academic_period_id'] ?? 0);
-            try { $this->call->model('AcademicPeriodModel')->period($periodId, true); } catch (DomainException $error) { $this->fail($error->getMessage(), $error->getCode()); return; }
+            try { $this->call->model('AcademicPeriodModel')->registration_period($periodId); } catch (DomainException $error) { $this->fail($error->getMessage(), $error->getCode()); return; }
             $d = $this->validate($input);
             if (!$d) {
                 return $this->fail('Invalid student details. Check number, name, section, course and year.');
@@ -441,9 +442,10 @@ class StudentController extends Controller
         $this->admin(function () {
             $v = $this->input();
             $periodId = (int) ($v['academic_period_id'] ?? 0);
-            try { $this->call->model('AcademicPeriodModel')->period($periodId, true); } catch (DomainException $error) { $this->fail($error->getMessage(), $error->getCode()); return; }
+            try { $this->call->model('AcademicPeriodModel')->registration_period($periodId); } catch (DomainException $error) { $this->fail($error->getMessage(), $error->getCode()); return; }
             $adminId = (int) $this->api->require_jwt()['sub'];
             $rows = $v['rows'] ?? null;
+            $period = $this->call->model('AcademicPeriodModel')->period($periodId, true);
             if (!is_array($rows) || count($rows) > 500) {
                 return $this->fail('Import must contain at most 500 student rows.');
             }
@@ -454,6 +456,12 @@ class StudentController extends Controller
             $seenDetails = [];
             foreach ($rows as $i => $row) {
                 $line = $i + 2;
+                $rowPeriod = is_array($row) ? ($row['academic_period_label'] ?? '') : '';
+                $normalizePeriod = static fn ($label) => mb_strtolower(str_replace('–', '-', trim($label)));
+                if (!is_string($rowPeriod) || ($rowPeriod !== '' && $normalizePeriod($rowPeriod) !== $normalizePeriod($period['label']))) {
+                    $skipped++; $errors[] = "Row {$line}: academic year and semester do not match the current Academic Settings. Download a fresh template.";
+                    continue;
+                }
                 $d = is_array($row) ? $this->validate($row) : null;
                 if (!$d) {
                     $skipped++;

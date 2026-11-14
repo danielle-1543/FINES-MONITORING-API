@@ -72,6 +72,8 @@ class StudentAccountModel extends Model
     {
         return array_intersect_key($student, array_flip([
             'student_number',
+            'current_academic_period_id',
+            'academic_period_label',
             'full_name',
             'course',
             'year_level',
@@ -156,7 +158,7 @@ class StudentAccountModel extends Model
     public function profile(int $userId): array
     {
         $student = $this->db->table('students s')
-            ->select('s.student_number,s.full_name,s.course,s.year_level,s.section,s.account_status,s.activation_status,s.activated_at')
+            ->select('s.student_number,s.full_name,s.course,s.year_level,s.section,s.current_academic_period_id,s.account_status,s.activation_status,s.activated_at')
             ->join('users u', 'u.id=s.user_id')
             ->where('u.id', $userId)
             ->where('u.role', 'STUDENT')
@@ -167,6 +169,8 @@ class StudentAccountModel extends Model
         if (!$student) {
             throw new DomainException('An active, activated student account is required.', 403);
         }
+        $period = empty($student['current_academic_period_id']) ? null : $this->db->table('academic_periods')->select('label')->where('id', $student['current_academic_period_id'])->get();
+        $student['academic_period_label'] = $period['label'] ?? 'Not assigned';
         return $this->profile_fields($student);
     }
 
