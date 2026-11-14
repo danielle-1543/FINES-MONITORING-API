@@ -90,10 +90,10 @@ class FineArchiveModel extends Model
         $fields = ['original', 'cap_adjustment', 'discount', 'payable', 'paid', 'outstanding'];
         $totals = array_fill_keys($fields, 0);
         $decimal = static fn ($amount) => number_format($amount / 100, 2, '.', '');
-        $empty = ['current_period' => null, 'records' => [], 'organizations' => [], 'summary' => array_map($decimal, $totals)];
+        $empty = ['current_period' => null, 'records' => [], 'organizations' => [], 'total_violations' => 0, 'summary' => array_map($decimal, $totals)];
         if (!$current || $current['status'] !== 'OPEN') return $empty;
         $periodId = (int) $current['id'];
-        $records = []; $organizations = [];
+        $records = []; $organizations = []; $violationCount = 0;
         $addOrganization = static function ($id, $name) use (&$organizations, $totals): void {
             if (!isset($organizations[$id])) $organizations[$id] = ['id' => (int) $id, 'name' => $name] + $totals;
         };
@@ -114,6 +114,7 @@ class FineArchiveModel extends Model
         // confirmed allocations must not be recalculated from a partial semester subset.
         foreach ($this->call->model('PaymentModel')->fine_rows([$studentId]) as $fine) {
             if ((int) ($fine['academic_period_id'] ?? 0) !== $periodId) continue;
+            if ($fine['record_type'] === 'VIOLATION') $violationCount++;
             $key = $fine['fine_key'];
             if (!isset($records[$key])) $records[$key] = ['id' => $key,
                 'description' => ($fine['violation_name'] ?: 'Fine') . ' · ' . $fine['event_name'], 'recorded_at' => $fine['recorded_at'],
@@ -134,6 +135,19 @@ class FineArchiveModel extends Model
         $organizations = array_values($organizations);
         usort($organizations, static fn ($a, $b) => strcasecmp($a['name'], $b['name']));
         return ['current_period' => ['id' => $periodId, 'label' => $current['label']], 'records' => $records,
-            'organizations' => $organizations, 'summary' => array_map($decimal, $totals)];
+            'organizations' => $organizations, 'total_violations' => $violationCount, 'summary' => array_map($decimal, $totals)];
+    }
+
+    public function dashboard_statistics(int $userId): array
+    {
+        // Payments follow their original fine semester, not an inferred calendar date.
+        // The personal ledger includes only confirmed allocations in its paid amount.
+        $archive = $this->student_current($userId);
+        return ['current_period' => $archive['current_period'], 'summary' => [
+            'total_violations' => $archive['total_violations'],
+            'total_fines' => $archive['summary']['original'],
+            'paid_amount' => $archive['summary']['paid'],
+            'unpaid_fines' => $archive['summary']['outstanding'],
+        ]];
     }
 }

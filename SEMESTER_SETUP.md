@@ -78,7 +78,9 @@ client-supplied student IDs and semester overrides. It shows fines and absences
 organization filter affects the list; the financial summary covers every
 organization in that semester. There are no allocations, exports or semester
 selectors on this student page. No open current semester produces an empty state.
-The student dashboard has no semester or all-semester financial summary panels.
+The student dashboard has four current-semester statistics: violation count,
+original fine assessments, verified payments allocated to that semester's fines,
+and the remaining adjusted balance. No historical/all-semester totals are used.
 Admin/organization archives retain their existing filters, tables and exports.
 
 Students choose a semester, then an eligible organization and an open payment

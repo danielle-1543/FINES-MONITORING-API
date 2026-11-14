@@ -95,6 +95,10 @@ check($personal['current_period']['id'] === $second && count($personal['records'
 check(array_column($personal['records'], 'id') === ['violation-50', 'scan-90', 'scan-2'], 'one chronological list includes zero-fine absences and keeps fully paid fines visible');
 check(count($personal['organizations']) === 2 && !isset($personal['payments']), 'student archive has dynamic organization breakdown without allocation tables');
 check($personal['summary'] === ['original' => '120.00', 'cap_adjustment' => '30.00', 'discount' => '5.00', 'payable' => '85.00', 'paid' => '70.00', 'outstanding' => '15.00'], 'personal summary applies separate caps and vouchers; pending/cancelled payments never reduce balance');
+$statistics = $archive->dashboard_statistics(1);
+check($statistics['current_period']['id'] === $second && $statistics['summary'] === ['total_violations' => 1, 'total_fines' => '120.00', 'paid_amount' => '70.00', 'unpaid_fines' => '15.00'], 'dashboard statistics count current violations separately from absences and reuse verified adjusted balances');
+$pdo->exec("INSERT INTO payment_claims(student_id,org_user_id,fine_key,amount,method,status) VALUES(2,10,'scan-1','5.00','CASH','CONFIRMED')");
+check($archive->dashboard_statistics(1) === $statistics, 'verified payments for another semester cannot inflate current dashboard statistics');
 $pdo->exec("ALTER TABLE org_events ADD event_type TEXT; ALTER TABLE org_events ADD absence_enabled INTEGER DEFAULT 0;
     ALTER TABLE org_events ADD attendance_finalized_at TEXT; ALTER TABLE org_events ADD absence_fine_amount TEXT;
     ALTER TABLE org_scan_records ADD recorded_by INTEGER;
@@ -134,9 +138,12 @@ $studentsModel->register_for_period(['student_number' => 'DEMO-NEW', 'full_name'
 check((int) $pdo->query("SELECT current_academic_period_id FROM students WHERE student_number='DEMO-NEW'")->fetchColumn() === $second, 'registration saves semester directly on student data without a second workflow');
 $pdo->exec("UPDATE students SET current_academic_period_id=$first WHERE id=2");
 check(count($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['records']) === 3, 'profile semester changes cannot reassign archived sources or override Academic Settings');
+$pdo->exec("INSERT INTO org_violation_records VALUES(51,2,NULL,20,'Warning','0.00','2026-11-16 10:00:00',$second,0)");
+check($archive->dashboard_statistics(1)['summary']['total_violations'] === 2, 'current violation count includes zero-amount violations');
 $pdo->exec('UPDATE academic_periods SET is_current=0');
 $empty = $archive->report(['role' => 'STUDENT', 'sub' => 1], ['academic_period_id' => 'all']);
 check($empty['current_period'] === null && !$empty['records'] && !$empty['organizations'], 'missing active semester returns empty state with no historical fallback');
 $pdo->exec("UPDATE academic_periods SET is_current=1,status='CLOSED' WHERE id=$second");
 check($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['current_period'] === null, 'closed current semester cannot expose closed-period student archives');
+check($archive->dashboard_statistics(1) === ['current_period' => null, 'summary' => ['total_violations' => 0, 'total_fines' => '0.00', 'paid_amount' => '0.00', 'unpaid_fines' => '0.00']], 'dashboard returns no current period and zero statistics when the semester is closed');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

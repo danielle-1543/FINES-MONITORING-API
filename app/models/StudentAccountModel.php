@@ -203,10 +203,6 @@ class StudentAccountModel extends Model
             r.violation_name,r.fine_amount,r.recorded_at,u.organization_name
             FROM org_violation_records r JOIN users u ON u.id=r.org_user_id
             LEFT JOIN org_events e ON e.id=r.event_id WHERE r.student_id=?";
-        $totals = $this->db->raw('SELECT COUNT(*) AS total_violations,COALESCE(SUM(fine_amount),0) AS unpaid_fines FROM (' . $violationsSql . ') violations', [
-            $id,
-            $id
-        ])->fetch(PDO::FETCH_ASSOC);
         $violations = $this->db->raw('SELECT * FROM (' . $violationsSql . ') violations ORDER BY recorded_at DESC,id DESC LIMIT 5', [
             $id,
             $id
@@ -252,14 +248,11 @@ class StudentAccountModel extends Model
             $payment['recorded_at'] = $payment['reviewed_at'];
         }
         unset($payment);
+        $statistics = $this->call->model('FineArchiveModel')->dashboard_statistics($userId);
         return [
             'profile' => $profile,
-            'summary' => [
-                'total_violations' => (int) $totals['total_violations'],
-                'unpaid_fines' => $payments['summary']['outstanding'],
-                'total_fines' => $payments['summary']['total_fines'],
-                'paid_amount' => $payments['summary']['paid_amount']
-            ],
+            'current_period' => $statistics['current_period'],
+            'summary' => $statistics['summary'],
             'recent_attendance' => $attendance,
             'recent_violations' => $violations,
             'recent_payments' => $recent,
