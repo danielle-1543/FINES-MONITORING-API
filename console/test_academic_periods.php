@@ -156,11 +156,15 @@ check($archive->report(['role' => 'STUDENT', 'sub' => 1], [])['current_period'] 
 check($archive->dashboard_statistics(1) === ['current_period' => null, 'summary' => ['total_violations' => 0, 'total_fines' => '0.00', 'paid_amount' => '0.00', 'unpaid_fines' => '0.00']], 'dashboard returns no current period and zero statistics when the semester is closed');
 $pdo->exec("UPDATE academic_periods SET status='OPEN',is_current=1 WHERE id=$second");
 $nextSemester = ['year_start' => 2027, 'term' => 'FIRST', 'is_current' => true];
+$pdo->exec("INSERT INTO students(id,user_id,course,account_status,activation_status,full_name,student_number,year_level,section,current_academic_period_id) VALUES
+    (70,NULL,'BSIT','ACTIVE','PENDING','Second Year Student','DEMO-Y2','2nd Year','F2',$second),
+    (71,NULL,'BSIT','ACTIVE','PENDING','Fourth Year Student','DEMO-Y4','4th Year','F4',$second)");
 $beforeStudents = $pdo->query('SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students ORDER BY id')->fetchAll();
 $preserved = [];
 foreach (['org_events','org_scan_records','org_violation_records','payment_claims','payment_claim_items','student_notifications'] as $table) $preserved[$table] = $pdo->query('SELECT * FROM ' . $table)->fetchAll();
 denied(fn () => $academic->save($nextSemester, 99), 409, 'semester rollover requires explicit preview and confirmation');
 $rolloverPreview = $academic->save($nextSemester + ['preview' => true], 99);
+check($rolloverPreview['advancing_academic_year'] && $rolloverPreview['year_levels_promoted'] === 4 && $rolloverPreview['fourth_year_unchanged'] === 1, 'academic year confirmation previews promotions and fourth-year retention');
 check((int) $academic->current()['id'] === $second && count($academic->periods()) === 2, 'cancelled rollover preview leaves current semester, students and new period unchanged');
 $pdo->exec("UPDATE students SET section='F9' WHERE id=3");
 denied(fn () => $academic->save($nextSemester + ['preview' => false, 'fingerprint' => $rolloverPreview['fingerprint']], 99), 409, 'rollover rejects a stale preview after student data changes');
@@ -169,6 +173,10 @@ $rolloverPreview = $academic->save($nextSemester + ['preview' => true], 99);
 $rollover = $academic->save($nextSemester + ['preview' => false, 'fingerprint' => $rolloverPreview['fingerprint']], 99);
 check($rollover['students_updated'] === count($beforeStudents) && (int) $pdo->query('SELECT COUNT(*) FROM students WHERE current_academic_period_id=' . $rollover['id'])->fetchColumn() === count($beforeStudents), 'confirmed rollover updates every student to the new semester');
 check($academic->period($second)['status'] === 'CLOSED', 'rollover closes the previous semester');
+$yearLevels = $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR);
+check($yearLevels[2] === '4th Year' && $yearLevels[70] === '3rd Year' && $yearLevels[71] === '4th Year'
+    && $pdo->query("SELECT year_level FROM students WHERE student_number='DEMO-NEW'")->fetchColumn() === '2nd Year',
+    'new academic year promotes first/second/third year by one level and keeps fourth year unchanged');
 denied(fn () => $studentsModel->register_for_period(['student_number' => 'STALE'], $second), 409, 'registration rejects a stale period after Academic Settings rollover');
 $saved = $academic->semester_history()[0]['snapshot'];
 check($saved['students'] === $beforeStudents && (int) $saved['from']['id'] === $second, 'previous semester records retain exact student data from before rollover');
@@ -185,4 +193,55 @@ try {
         'audit failure rolls back period creation, closing and all student changes together');
 }
 $pdo->exec('DROP TRIGGER prevent_rollover_history');
+$semesterOnly = saveAcademic($academic, $failedSwitch);
+check($semesterOnly['year_levels_promoted'] === 0 && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'changing semester within one academic year never promotes students');
+saveAcademic($academic, array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN']));
+check($pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'switching to an older academic year never demotes students');
+$repeatYear = saveAcademic($academic, array_replace($academic->period($rollover['id']), ['is_current' => true, 'status' => 'OPEN']));
+check($repeatYear['year_levels_promoted'] === 0 && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'returning to an already processed academic year cannot promote students twice');
+$promotionFailure = ['year_start' => 2028, 'term' => 'FIRST', 'is_current' => true];
+$promotionPreview = $academic->save($promotionFailure + ['preview' => true], 99);
+$pdo->exec("CREATE TRIGGER prevent_year_level_change BEFORE UPDATE ON students WHEN NEW.year_level<>OLD.year_level BEGIN SELECT RAISE(ABORT,'simulated promotion failure'); END");
+try {
+    $academic->save($promotionFailure + ['preview' => false, 'fingerprint' => $promotionPreview['fingerprint']], 99);
+    throw new RuntimeException('Failed year-level promotion unexpectedly committed.');
+} catch (PDOException $expected) {
+    check((int) $academic->current()['id'] === $rollover['id'] && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels
+        && (int) $pdo->query('SELECT COUNT(*) FROM students WHERE current_academic_period_id=' . $rollover['id'])->fetchColumn() === count($beforeStudents),
+        'promotion failure rolls back all semester and year-level changes atomically');
+}
+$pdo->exec('DROP TRIGGER prevent_year_level_change');
+$graduation = ['student_ids' => [2,71], 'reason' => 'GRADUATED', 'changes' => [], 'preview' => true];
+denied(fn () => $studentsModel->update_students(array_replace($graduation, ['student_ids' => [2,70]]), 99), 409, 'graduation rejects a selection containing a non-fourth-year student');
+$graduateBefore = $pdo->query('SELECT * FROM students WHERE id=2')->fetch();
+$graduatePayments = $pdo->query('SELECT * FROM payment_claims')->fetchAll();
+$graduateReview = $studentsModel->update_students($graduation, 99);
+check($pdo->query('SELECT year_level FROM students WHERE id=2')->fetchColumn() === '4th Year', 'graduation preview does not archive students before confirmation');
+$studentsModel->update_students(array_replace($graduation, ['preview' => false, 'fingerprint' => $graduateReview['fingerprint']]), 99);
+$graduateAfter = $pdo->query('SELECT * FROM students WHERE id=2')->fetch();
+check($graduateAfter['year_level'] === 'Graduated' && $graduateAfter['qr_token'] === $graduateBefore['qr_token']
+    && $graduateAfter['account_status'] === $graduateBefore['account_status'] && $pdo->query('SELECT * FROM payment_claims')->fetchAll() === $graduatePayments,
+    'confirmed graduation preserves account, QR and payment records');
+$currentIds = $studentsModel->matching_student_ids([], false);
+$graduateIds = $studentsModel->matching_student_ids(['year_level' => 'Graduated']);
+check(!in_array(2, $currentIds, true) && !in_array(71, $currentIds, true) && in_array(2, $graduateIds, true) && in_array(71, $graduateIds, true), 'default student list excludes graduates and Graduated filter retrieves archived records');
+denied(fn () => $academic->require_student_period(2, $rollover['id']), 409, 'graduated student cannot receive new semester scan records');
+$pdo->exec("INSERT INTO org_events(id,org_user_id,name,scan_ends_at,academic_period_id) VALUES(8,10,'New roster','2099-01-01'," . $rollover['id'] . ")");
+$attendance->snapshot(8,10);
+check((int) $pdo->query('SELECT COUNT(*) FROM org_event_roster WHERE event_id=8 AND student_id=2')->fetchColumn() === 0, 'new attendance rosters exclude graduates');
+// Graduation must not erase a missed absence from an event that ended before graduation.
+$pdo->exec("UPDATE student_change_history SET changed_at='2020-01-02 00:00:00' WHERE reason='GRADUATED';
+    INSERT INTO org_events(id,org_user_id,name,scan_ends_at,academic_period_id,event_type,absence_enabled,absence_fine_amount) VALUES
+        (10,10,'Before graduation','2020-01-01 12:00:00',$first,'ATTENDANCE',1,'15.00'),
+        (11,10,'After graduation','2020-01-03 12:00:00',$first,'ATTENDANCE',1,'15.00');
+    INSERT INTO org_event_roster VALUES(10,2),(11,2)");
+check($attendance->finalize(10) === 1 && (int) $pdo->query('SELECT COUNT(*) FROM org_scan_records WHERE event_id=10 AND student_id=2')->fetchColumn() === 1
+    && (int) $pdo->query('SELECT COUNT(*) FROM org_scan_records WHERE event_id=11 AND student_id=2')->fetchColumn() === 0,
+    'absence finalization keeps pre-graduation history but cannot fine graduates for later roster events');
+$graduatePeriod = $graduateAfter['current_academic_period_id'];
+$afterGraduationPreview = $academic->save($promotionFailure + ['preview' => true], 99);
+check($afterGraduationPreview['graduates_excluded'] === 2 && $afterGraduationPreview['students'] === count($beforeStudents)-2, 'rollover confirmation counts only non-graduates and reports excluded graduates');
+$afterGraduation = $academic->save($promotionFailure + ['preview' => false, 'fingerprint' => $afterGraduationPreview['fingerprint']], 99);
+check($afterGraduation['students_updated'] === count($beforeStudents)-2 && $pdo->query('SELECT current_academic_period_id FROM students WHERE id=2')->fetchColumn() == $graduatePeriod
+    && $pdo->query('SELECT year_level FROM students WHERE id=71')->fetchColumn() === 'Graduated', 'future year rollover leaves graduates archived in their last academic period');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";

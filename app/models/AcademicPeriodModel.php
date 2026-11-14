@@ -68,16 +68,45 @@ class AcademicPeriodModel extends Model
             $previous = $this->current();
             if ($previous && (int) $previous['id'] === $id && (!$current || $status !== 'OPEN')) throw new DomainException('Change to another semester first. The current semester cannot be closed on its own.', 409);
             $switching = $current && (!$previous || (int) $previous['id'] !== $id);
+            $advancingYear = $switching && $previous && $year > (int) $previous['year_start'];
             $students = [];
+            $promotionPlan = []; $promoted = 0; $fourthYear = 0; $manualReview = 0;
+            $graduatesExcluded = 0;
             $label = $year . '–' . ($year + 1) . ' · ' . $terms[$term];
             if ($switching) {
                 // Match the organization-first lock order used by scans and payments.
                 $this->db->raw("SELECT id FROM users WHERE role='ORGANIZATION' ORDER BY id FOR UPDATE");
-                $students = $this->db->raw('SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students ORDER BY id FOR UPDATE')->fetchAll(PDO::FETCH_ASSOC);
-                $fingerprint = hash('sha256', json_encode([$id, $year, $term, $previous, $students], JSON_THROW_ON_ERROR));
+                $students = $this->db->raw("SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students WHERE year_level<>'Graduated' ORDER BY id FOR UPDATE")->fetchAll(PDO::FETCH_ASSOC);
+                $graduatesExcluded = $this->db->table('students')->where('year_level', 'Graduated')->count();
+                $periodYears = array_column($this->periods(), 'year_start', 'id');
+                $processedYears = [];
+                if ($advancingYear) {
+                    $history = $this->db->table('student_change_history')->select('student_id,after_values')
+                        ->in('reason', ['SEMESTER_ROLLOVER', 'ACADEMIC_YEAR_PROMOTION'])->get_all();
+                    foreach ($history as $entry) {
+                        $after = json_decode($entry['after_values'], true, 512, JSON_THROW_ON_ERROR);
+                        if (!empty($after['academic_year_advanced'])) $processedYears[$entry['student_id']] = max($processedYears[$entry['student_id']] ?? 0, (int) $after['academic_year_start']);
+                    }
+                }
+                $nextYearLevel = ['1st Year' => '2nd Year', '2nd Year' => '3rd Year', '3rd Year' => '4th Year', '4th Year' => '4th Year'];
+                foreach ($students as $student) {
+                    $next = $student['year_level'];
+                    if ($advancingYear && $next === '4th Year') $fourthYear++;
+                    if ($advancingYear && !isset($nextYearLevel[$next])) $manualReview++;
+                    if ($advancingYear && ($processedYears[$student['id']] ?? 0) < $year
+                        && (int) ($periodYears[$student['current_academic_period_id'] ?? 0] ?? 0) < $year) {
+                        if (isset($nextYearLevel[$next])) {
+                            $next = $nextYearLevel[$next];
+                        }
+                    }
+                    if ($next !== $student['year_level']) $promoted++;
+                    $promotionPlan[$student['id']] = $next;
+                }
+                $fingerprint = hash('sha256', json_encode([$id, $year, $term, $previous, $students, $promotionPlan], JSON_THROW_ON_ERROR));
                 if (($input['preview'] ?? null) === true) {
                     $this->db->commit();
-                    return ['preview' => true, 'fingerprint' => $fingerprint, 'from' => $previous['label'] ?? null, 'to' => $label, 'students' => count($students)];
+                    return ['preview' => true, 'fingerprint' => $fingerprint, 'from' => $previous['label'] ?? null, 'to' => $label, 'students' => count($students),
+                        'advancing_academic_year' => (bool) $advancingYear, 'year_levels_promoted' => $promoted, 'fourth_year_unchanged' => $fourthYear, 'year_level_review' => $manualReview, 'graduates_excluded' => $graduatesExcluded];
                 }
                 if (($input['preview'] ?? null) !== false || !is_string($input['fingerprint'] ?? null) || !hash_equals($fingerprint, $input['fingerprint'])) throw new DomainException('Review and confirm the semester change first. Student data or the current semester may have changed.', 409);
             }
@@ -93,11 +122,12 @@ class AcademicPeriodModel extends Model
                 $periodLabels = array_column($this->periods(), 'label', 'id');
                 foreach ($students as $student) {
                     $before = $student + ['academic_period_label' => $periodLabels[$student['current_academic_period_id'] ?? 0] ?? 'Not assigned'];
-                    $after = array_replace($before, ['current_academic_period_id' => $id, 'academic_period_label' => $label]);
+                    $after = array_replace($before, ['current_academic_period_id' => $id, 'academic_period_label' => $label,
+                        'year_level' => $promotionPlan[$student['id']], 'academic_year_start' => $year, 'academic_year_advanced' => (bool) $advancingYear]);
                     $this->db->table('student_change_history')->insert(['student_id' => $student['id'], 'changed_by' => $adminId,
-                        'batch_id' => $batch, 'reason' => 'SEMESTER_ROLLOVER', 'note' => 'Semester change: ' . ($previous['label'] ?? 'Not configured') . ' to ' . $label,
+                        'batch_id' => $batch, 'reason' => $after['year_level'] !== $before['year_level'] ? 'ACADEMIC_YEAR_PROMOTION' : 'SEMESTER_ROLLOVER', 'note' => 'Semester change: ' . ($previous['label'] ?? 'Not configured') . ' to ' . $label,
                         'before_values' => json_encode($before, JSON_THROW_ON_ERROR), 'after_values' => json_encode($after, JSON_THROW_ON_ERROR), 'changed_at' => $now]);
-                    $this->db->table('students')->where('id', $student['id'])->update(['current_academic_period_id' => $id]);
+                    $this->db->table('students')->where('id', $student['id'])->update(['current_academic_period_id' => $id, 'year_level' => $after['year_level']]);
                 }
                 $counts = [];
                 foreach (['org_events', 'org_scan_records', 'org_violation_records', 'payment_claims'] as $table) {
@@ -105,9 +135,10 @@ class AcademicPeriodModel extends Model
                 }
                 $this->db->table('academic_record_changes')->insert(['changed_by' => $adminId, 'academic_period_id' => $id,
                     'source_kind' => 'SEMESTER_CHANGE', 'source_id' => $previous['id'] ?? 0,
-                    'change_details' => json_encode(['from' => $previous, 'to' => $values + ['id' => $id], 'students' => $students, 'records' => $counts], JSON_THROW_ON_ERROR), 'changed_at' => $now]);
+                    'change_details' => json_encode(['from' => $previous, 'to' => $values + ['id' => $id], 'students' => $students, 'records' => $counts,
+                        'year_levels_promoted' => $promoted, 'advancing_academic_year' => (bool) $advancingYear, 'graduates_excluded' => $graduatesExcluded], JSON_THROW_ON_ERROR), 'changed_at' => $now]);
             }
-            $this->db->commit(); return ['id' => $id, 'students_updated' => count($students)];
+            $this->db->commit(); return ['id' => $id, 'students_updated' => count($students), 'year_levels_promoted' => $promoted];
         } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
     }
     public function semester_history(): array
@@ -125,7 +156,8 @@ class AcademicPeriodModel extends Model
     {
         if (!$periodId) return;
         $this->period($periodId, true);
-        $student = $this->db->table('students')->select('current_academic_period_id')->where('id', $studentId)->get();
+        $student = $this->db->table('students')->select('current_academic_period_id,year_level')->where('id', $studentId)->get();
+        if (($student['year_level'] ?? '') === 'Graduated') throw new DomainException('Graduated students are archived and cannot receive new attendance or violation records.', 409);
         if (!$student || (int) $student['current_academic_period_id'] !== $periodId) throw new DomainException('Student semester does not match this record. Update the student data first.', 409);
     }
     public function legacy_sources(): array

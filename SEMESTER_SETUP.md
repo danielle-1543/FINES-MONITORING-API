@@ -52,8 +52,34 @@ if the current semester or student data changed before confirmation.
 On confirmation, one transaction saves student before/after history and a
 before-change snapshot, closes the previous current semester, switches the current
 period and updates ALL students to the new semester (including pending/inactive
-registrations). Year level, section, course, accounts and QR codes stay unchanged.
-Use Edit Profile or Multiple edits for year-level/section changes separately.
+registrations), excluding students marked Graduated. Advancing to a later academic year promotes eligible students one
+level: 1st → 2nd → 3rd → 4th Year. Fourth-year students remain at 4th Year for
+administrator review; no graduation or deactivation is inferred. Initial academic
+setup and semester changes within the same academic year do not promote students.
+Previously processed academic years do not promote a student twice, and switching
+to an older academic year does not demote students. Students already assigned to
+the target academic year are not advanced again. Unrecognized year levels are
+left unchanged and flagged in the confirmation preview for manual review.
+Section, course, accounts and QR codes stay unchanged. Use Edit Profile or
+Multiple edits for retained students, exceptions, course or section changes.
+
+### Manually archive graduates
+
+In Student Management, filter 4th Year, select students and use **Multiple edits →
+Mark as Graduated / Archive** (also available through Edit Profile or the year-level
+update dropdown). Review before/after changes and confirm. Only selected fourth-year
+students are eligible; the server rejects mixed selections containing other years.
+Graduation is saved as `Graduated` in the existing year-level field and audited with
+the previous year/semester; no new table or destructive migration is needed.
+
+Graduates disappear from the default current-student list. Choose **Graduated**
+in the year-level filter to retrieve them; use All academic periods if reviewing
+graduates from an earlier period. Their last academic-period assignment is retained
+and future rollovers, rosters and new scans exclude them. Existing accounts, QR
+identities, payments, outstanding balances and original records are preserved.
+Graduation does not silently deactivate accounts or erase unpaid fines. Historical
+absences from events ending before graduation remain eligible for finalization;
+later events cannot create new absence fines for graduates.
 Original events, attendance, fine amounts, caps, payment allocations and
 notifications retain their original IDs and semester references. Existing unpaid
 balances are preserved; switching semesters does not forgive or recreate fines.

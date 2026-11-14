@@ -392,7 +392,7 @@ class OrgEventModel extends Model
     private function students_query(int $orgId, array $filters): array
     {
         $params = [];
-        $where = $this->course_scope($orgId, 's', $params);
+        $where = $this->course_scope($orgId, 's', $params) . " AND s.year_level<>'Graduated'";
         $search = mb_substr($this->text($filters, 'search'), 0, 100);
         foreach (['course', 'year_level', 'section'] as $field) {
             $value = mb_substr($this->text($filters, $field), 0, 100);
@@ -458,6 +458,7 @@ class OrgEventModel extends Model
         if (!$student || $student['account_status'] !== 'ACTIVE' || $student['activation_status'] !== 'ACTIVATED' || $student['qr_token_status'] !== 'ACTIVE') {
             throw new DomainException('Student is outside your organization or the account/QR is not active and activated.', 403);
         }
+        if ($student['year_level'] === 'Graduated') throw new DomainException('This student is Graduated and archived. New attendance and violations cannot be recorded.', 409);
         return $student;
     }
 

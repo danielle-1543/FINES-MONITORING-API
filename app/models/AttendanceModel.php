@@ -9,7 +9,7 @@ class AttendanceModel extends Model
         $params = [
             $eventId
         ];
-        $where = "account_status='ACTIVE' AND activation_status='ACTIVATED'";
+        $where = "account_status='ACTIVE' AND activation_status='ACTIVATED' AND year_level<>'Graduated'";
         $event = $this->db->table('org_events')->select('academic_period_id')->where('id', '=', $eventId)->get();
         if (!empty($event['academic_period_id'])) {
             $where .= " AND current_academic_period_id=?";
@@ -53,14 +53,18 @@ class AttendanceModel extends Model
                 }
                 $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status,academic_period_id,legacy_assessment)
                 SELECT r.event_id,r.student_id,?,'ATTENDANCE',?,?,'ABSENT',?,? FROM org_event_roster r
+                JOIN students st ON st.id=r.student_id
                 LEFT JOIN org_scan_records s ON s.event_id=r.event_id AND s.student_id=r.student_id
-                WHERE r.event_id=? AND s.id IS NULL", [
+                WHERE r.event_id=? AND s.id IS NULL
+                AND NOT (st.year_level='Graduated' AND EXISTS (SELECT 1 FROM student_change_history h
+                    WHERE h.student_id=r.student_id AND h.reason='GRADUATED' AND h.changed_at<=?))", [
                     $event['org_user_id'],
                     $event['absence_fine_amount'],
                     $event['scan_ends_at'],
                     $event['academic_period_id'],
                     empty($event['academic_period_id']) ? 1 : 0,
-                    $event['id']
+                    $event['id'],
+                    $event['scan_ends_at']
                 ]);
                 $total += $insert->rowCount();
                 $this->call->model('NotificationModel')
