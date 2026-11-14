@@ -52,14 +52,18 @@ if the current semester or student data changed before confirmation.
 On confirmation, one transaction saves student before/after history and a
 before-change snapshot, closes the previous current semester, switches the current
 period and updates ALL students to the new semester (including pending/inactive
-registrations), excluding students marked Graduated. Advancing to a later academic year promotes eligible students one
+registrations), excluding students marked Graduated. Advancing to the next academic year promotes eligible students one
 level: 1st → 2nd → 3rd → 4th Year. Fourth-year students remain at 4th Year for
 administrator review; no graduation or deactivation is inferred. Initial academic
 setup and semester changes within the same academic year do not promote students.
-Previously processed academic years do not promote a student twice, and switching
-to an older academic year does not demote students. Students already assigned to
-the target academic year are not advanced again. Unrecognized year levels are
-left unchanged and flagged in the confirmation preview for manual review.
+Changing to an older academic year restores the student's saved year level for
+that year. Returning forward restores the saved newer-year level, preventing
+repeated switches from promoting students twice. Saved explicit profile
+corrections take precedence. If no saved level exists, the current level is
+adjusted by the academic-year difference, bounded between 1st and 4th Year.
+Same-academic-year semester changes leave year levels unchanged. Unrecognized
+levels stay unchanged and are flagged for manual review. The confirmation shows
+the numbers increasing, decreasing and being restored from saved records.
 Section, course, accounts and QR codes stay unchanged. Use Edit Profile or
 Multiple edits for retained students, exceptions, course or section changes.
 

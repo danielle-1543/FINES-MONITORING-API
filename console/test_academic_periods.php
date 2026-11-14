@@ -196,9 +196,10 @@ $pdo->exec('DROP TRIGGER prevent_rollover_history');
 $semesterOnly = saveAcademic($academic, $failedSwitch);
 check($semesterOnly['year_levels_promoted'] === 0 && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'changing semester within one academic year never promotes students');
 saveAcademic($academic, array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN']));
-check($pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'switching to an older academic year never demotes students');
+$oldYearLevels = array_column($beforeStudents, 'year_level', 'id');
+check($pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $oldYearLevels, 'switching to an older academic year restores saved year levels');
 $repeatYear = saveAcademic($academic, array_replace($academic->period($rollover['id']), ['is_current' => true, 'status' => 'OPEN']));
-check($repeatYear['year_levels_promoted'] === 0 && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'returning to an already processed academic year cannot promote students twice');
+check($repeatYear['year_levels_restored'] > 0 && $pdo->query('SELECT id,year_level FROM students ORDER BY id')->fetchAll(PDO::FETCH_KEY_PAIR) === $yearLevels, 'returning forward restores saved newer-year levels without double promotion');
 $promotionFailure = ['year_start' => 2028, 'term' => 'FIRST', 'is_current' => true];
 $promotionPreview = $academic->save($promotionFailure + ['preview' => true], 99);
 $pdo->exec("CREATE TRIGGER prevent_year_level_change BEFORE UPDATE ON students WHEN NEW.year_level<>OLD.year_level BEGIN SELECT RAISE(ABORT,'simulated promotion failure'); END");
@@ -244,4 +245,13 @@ check($afterGraduationPreview['graduates_excluded'] === 2 && $afterGraduationPre
 $afterGraduation = $academic->save($promotionFailure + ['preview' => false, 'fingerprint' => $afterGraduationPreview['fingerprint']], 99);
 check($afterGraduation['students_updated'] === count($beforeStudents)-2 && $pdo->query('SELECT current_academic_period_id FROM students WHERE id=2')->fetchColumn() == $graduatePeriod
     && $pdo->query('SELECT year_level FROM students WHERE id=71')->fetchColumn() === 'Graduated', 'future year rollover leaves graduates archived in their last academic period');
+$pdo->exec("INSERT INTO students(id,user_id,course,account_status,activation_status,full_name,student_number,year_level,section,current_academic_period_id)
+    VALUES(90,NULL,'BSIT','ACTIVE','PENDING','No Previous Snapshot','DEMO-NOHISTORY','3rd Year','F3'," . $afterGraduation['id'] . ")");
+$olderPreview = $academic->save(array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN', 'preview' => true]), 99);
+check($olderPreview['year_levels_reduced'] > 0 && $olderPreview['year_levels_restored'] > 0, 'backward-switch confirmation reports reductions and restored year levels');
+$olderResult = $academic->save(array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN', 'preview' => false, 'fingerprint' => $olderPreview['fingerprint']]), 99);
+check($pdo->query('SELECT year_level FROM students WHERE id=90')->fetchColumn() === '1st Year', 'missing historical level adjusts by academic-year difference without dropping below first year');
+check($pdo->query('SELECT year_level FROM students WHERE id=71')->fetchColumn() === 'Graduated' && $pdo->query('SELECT current_academic_period_id FROM students WHERE id=2')->fetchColumn() == $graduatePeriod, 'backward semester switches keep graduates archived');
+saveAcademic($academic, array_replace($academic->period($afterGraduation['id']), ['is_current' => true, 'status' => 'OPEN']));
+check($pdo->query('SELECT year_level FROM students WHERE id=90')->fetchColumn() === '3rd Year', 'returning forward restores an original level even after bounded backward adjustment');
 echo "PASS: academic fixtures use real LavaLust Query Builder with no hosted database access.\n";
