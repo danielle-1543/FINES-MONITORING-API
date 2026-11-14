@@ -74,12 +74,26 @@ class AcademicPeriodModel extends Model
             $reduced = 0; $restored = 0; $yearLevelsUpdated = 0;
             $promotionPlan = []; $promoted = 0; $fourthYear = 0; $manualReview = 0;
             $graduatesExcluded = 0;
+            $semesterStudents = [];
             $label = $year . '–' . ($year + 1) . ' · ' . $terms[$term];
             if ($switching) {
                 // Match the organization-first lock order used by scans and payments.
                 $this->db->raw("SELECT id FROM users WHERE role='ORGANIZATION' ORDER BY id FOR UPDATE");
                 $students = $this->db->raw("SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students WHERE year_level<>'Graduated' ORDER BY id FOR UPDATE")->fetchAll(PDO::FETCH_ASSOC);
                 $graduatesExcluded = $this->db->table('students')->where('year_level', 'Graduated')->count();
+                if ($previous) {
+                    foreach ($students as $student) {
+                        if ((int) $student['current_academic_period_id'] === (int) $previous['id']) $semesterStudents[] = $student + ['student_status' => 'Not graduated'];
+                    }
+                    $graduates = $this->db->raw("SELECT id,student_number,full_name,course,year_level,section,current_academic_period_id FROM students
+                        WHERE year_level='Graduated' AND current_academic_period_id=? ORDER BY id FOR UPDATE", [$previous['id']])->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($graduates as $graduate) {
+                        // Graduation is restricted to fourth-year students; keep the
+                        // completed year level and graduation status as separate export fields.
+                        $graduate['year_level'] = '4th Year';
+                        $semesterStudents[] = $graduate + ['student_status' => 'Graduated'];
+                    }
+                }
                 $periodYears = array_column($this->periods(), 'year_start', 'id');
                 $levels = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
                 $savedLevels = [];
@@ -120,7 +134,7 @@ class AcademicPeriodModel extends Model
                     if ($advancingYear && $student['year_level'] === '4th Year' && $next === '4th Year') $fourthYear++;
                     $promotionPlan[$student['id']] = $next;
                 }
-                $fingerprint = hash('sha256', json_encode([$id, $year, $term, $previous, $students, $promotionPlan], JSON_THROW_ON_ERROR));
+                $fingerprint = hash('sha256', json_encode([$id, $year, $term, $previous, $students, $promotionPlan, $semesterStudents], JSON_THROW_ON_ERROR));
                 if (($input['preview'] ?? null) === true) {
                     $this->db->commit();
                     return ['preview' => true, 'fingerprint' => $fingerprint, 'from' => $previous['label'] ?? null, 'to' => $label, 'students' => count($students),
@@ -154,7 +168,7 @@ class AcademicPeriodModel extends Model
                 }
                 $this->db->table('academic_record_changes')->insert(['changed_by' => $adminId, 'academic_period_id' => $id,
                     'source_kind' => 'SEMESTER_CHANGE', 'source_id' => $previous['id'] ?? 0,
-                    'change_details' => json_encode(['from' => $previous, 'to' => $values + ['id' => $id], 'students' => $students, 'records' => $counts,
+                    'change_details' => json_encode(['from' => $previous, 'to' => $values + ['id' => $id], 'students' => $students, 'semester_students' => $semesterStudents, 'records' => $counts,
                         'year_levels_promoted' => $promoted, 'advancing_academic_year' => (bool) $advancingYear, 'graduates_excluded' => $graduatesExcluded,
                         'academic_year_changed' => (bool) $changingYear, 'year_levels_updated' => $yearLevelsUpdated, 'year_levels_reduced' => $reduced, 'year_levels_restored' => $restored], JSON_THROW_ON_ERROR), 'changed_at' => $now]);
             }
@@ -171,6 +185,26 @@ class AcademicPeriodModel extends Model
         }
         unset($row);
         return $rows;
+    }
+    public function semester_export(int $snapshotId): array
+    {
+        $row = $this->db->table('academic_record_changes')->select('id,changed_at,change_details')
+            ->where('id', $snapshotId)->where('source_kind', 'SEMESTER_CHANGE')->get();
+        if (!$row) throw new DomainException('Saved semester record not found.', 404);
+        $snapshot = json_decode($row['change_details'], true, 512, JSON_THROW_ON_ERROR);
+        if (empty($snapshot['from'])) throw new DomainException('This change has no previous semester to export.', 409);
+        $students = $snapshot['semester_students'] ?? array_values(array_filter($snapshot['students'], static fn ($student) =>
+            (int) ($student['current_academic_period_id'] ?? 0) === (int) $snapshot['from']['id']));
+        $data = [];
+        foreach ($students as $student) $data[] = [
+            'academic_period_label' => $snapshot['from']['label'], 'student_number' => $student['student_number'],
+            'full_name' => $student['full_name'], 'course' => $student['course'], 'year_level' => $student['year_level'],
+            'section' => $student['section'], 'student_status' => $student['student_status'] ?? ($student['year_level'] === 'Graduated' ? 'Graduated' : 'Not graduated'),
+            'saved_at' => $row['changed_at'],
+        ];
+        return ['data' => $data, 'columns' => ['academic_period_label' => 'Academic Year / Semester', 'student_number' => 'Student Number',
+            'full_name' => 'Full Name', 'course' => 'Course', 'year_level' => 'Year Level', 'section' => 'Section', 'student_status' => 'Graduation Status', 'saved_at' => 'Saved At'],
+            'graduate_inclusion_recorded' => array_key_exists('semester_students', $snapshot)];
     }
     public function require_student_period(int $studentId, ?int $periodId): void
     {

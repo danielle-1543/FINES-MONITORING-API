@@ -247,6 +247,23 @@ check($afterGraduation['students_updated'] === count($beforeStudents)-2 && $pdo-
     && $pdo->query('SELECT year_level FROM students WHERE id=71')->fetchColumn() === 'Graduated', 'future year rollover leaves graduates archived in their last academic period');
 $pdo->exec("INSERT INTO students(id,user_id,course,account_status,activation_status,full_name,student_number,year_level,section,current_academic_period_id)
     VALUES(90,NULL,'BSIT','ACTIVE','PENDING','No Previous Snapshot','DEMO-NOHISTORY','3rd Year','F3'," . $afterGraduation['id'] . ")");
+$graduateSnapshot = $academic->semester_history()[0];
+$graduateExport = $academic->semester_export((int) $graduateSnapshot['id']);
+$exportedStudents = array_column($graduateExport['data'], null, 'student_number');
+check($graduateExport['graduate_inclusion_recorded'] && $exportedStudents[$graduateAfter['student_number']]['student_status'] === 'Graduated'
+    && $exportedStudents[$graduateAfter['student_number']]['year_level'] === '4th Year'
+    && $exportedStudents[$graduateAfter['student_number']]['academic_period_label'] === $graduateSnapshot['snapshot']['from']['label'],
+    'saved semester export includes graduates with completed year level and final academic period');
+$pdo->exec("UPDATE students SET full_name='Later profile edit' WHERE id=2");
+check($academic->semester_export((int) $graduateSnapshot['id']) === $graduateExport, 'semester export remains frozen after later profile edits');
+denied(fn () => $academic->semester_export(999999), 404, 'semester export rejects a missing snapshot');
+$legacySnapshot = $graduateSnapshot['snapshot'];
+unset($legacySnapshot['semester_students']);
+$pdo->prepare("INSERT INTO academic_record_changes(changed_by,academic_period_id,source_kind,source_id,change_details,changed_at) VALUES(99,?,'SEMESTER_CHANGE',?,?,?)")
+    ->execute([$afterGraduation['id'], $graduatePeriod, json_encode($legacySnapshot), '2026-11-14 12:00:00']);
+$legacyExport = $academic->semester_export((int) $pdo->lastInsertId());
+check(!$legacyExport['graduate_inclusion_recorded'] && !in_array($graduateAfter['student_number'], array_column($legacyExport['data'], 'student_number'), true),
+    'older snapshot exports original saved rows and flags missing graduate capture instead of guessing');
 $olderPreview = $academic->save(array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN', 'preview' => true]), 99);
 check($olderPreview['year_levels_reduced'] > 0 && $olderPreview['year_levels_restored'] > 0, 'backward-switch confirmation reports reductions and restored year levels');
 $olderResult = $academic->save(array_replace($academic->period($second), ['is_current' => true, 'status' => 'OPEN', 'preview' => false, 'fingerprint' => $olderPreview['fingerprint']]), 99);

@@ -89,9 +89,13 @@ notifications retain their original IDs and semester references. Existing unpaid
 balances are preserved; switching semesters does not forgive or recreate fines.
 
 Academic Settings → Previous semester records replaces legacy-classification
-controls. Expand a saved change to see the student data from before it and counts
-of preserved operational records. This history starts when the confirmed rollover
-feature is first used; no earlier student snapshots are guessed retroactively.
+controls. Mark graduating students before changing the semester. Expand a saved
+change and choose **Export Semester Records** to download student details, academic
+year/semester, completed year level and graduation status. Graduates are included
+only in their final assigned semester. The file uses the frozen snapshot; later
+profile edits do not change it. Counts of preserved operational records remain visible.
+Older snapshots export only their original saved rows and show a warning when
+graduate inclusion was not captured. Earlier student snapshots are not guessed.
 The current period cannot be closed alone: switch to another period instead.
 
 ## Payments and reports
