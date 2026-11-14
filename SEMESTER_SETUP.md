@@ -100,6 +100,22 @@ The current period cannot be closed alone: switch to another period instead.
 
 ## Payments and reports
 
+Organizations may add multiple non-overlapping payment windows in the open current
+semester. A subsequent window inherits the original cap; caps, verified payments
+and pending allocations do not reset between windows. Changing the current academic
+period prevents creating/editing windows for the previous period.
+While an organization's payment window is open, the server rejects new violation
+fines, including fines attached to attendance. Attendance without fines remains
+available. Automatic absences remain recorded with zero charge during a window;
+events ending inside a window cannot gain a charge through delayed finalization.
+Fine recording resumes once the window closes. Boundaries use Philippine time,
+including the opening instant and excluding the closing instant.
+Saving a new window or changing its times queues an inbox/OneSignal announcement
+for eligible active linked students in that semester. Delivery runs after commit;
+vendor failure leaves the saved schedule intact and retains the notification queue.
+An unchanged save does not repeat announcements. Run
+`php console/test_payment_windows.php` for isolated policy/scanner/notification checks.
+
 Student Fine Archives is a personal, current-semester page. Its API uses the
 authenticated student and the open current period from Academic Settings, ignoring
 client-supplied student IDs and semester overrides. It shows fines and absences

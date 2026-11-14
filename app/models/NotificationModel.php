@@ -59,6 +59,27 @@ class NotificationModel extends Model
         );
     }
 
+    public function payment_window(int $orgId, int $windowId, array $academic, string $opens, string $closes): void
+    {
+        $org = $this->call->model('OrgEventModel')->organization($orgId);
+        $query = $this->db->table('students')->select('user_id')->where('account_status', 'ACTIVE')
+            ->where('current_academic_period_id', $academic['id'])->where('year_level', '<>', 'Graduated');
+        if ($org['allowed_courses'] !== null) {
+            if (!$org['allowed_courses']) return;
+            $query->in('course', $org['allowed_courses']);
+        }
+        $now = $this->now();
+        $revision = bin2hex(random_bytes(16));
+        foreach ($query->get_all() as $student) {
+            $this->save(['user_id' => $student['user_id'], 'recorded_at' => $now],
+                'payment-window:' . $windowId . ':' . hash('sha256', $student['user_id'] . ':' . $revision),
+                'PAYMENT_WINDOW', 'Payment window scheduled',
+                ($org['organization_name'] ?? 'Your organization') . ' · ' . $academic['label']
+                . ': payments are accepted from ' . $opens . ' until ' . $closes
+                . ' (Philippine time). New fines are locked while this payment window is open.');
+        }
+    }
+
     public function record_scan(int $scanId): void
     {
         $record = $this->db->raw(

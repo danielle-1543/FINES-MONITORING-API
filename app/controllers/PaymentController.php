@@ -106,7 +106,10 @@ class PaymentController extends Controller
     {
         $this->run('POST', function ($id, $data) {
             $this->call->model('PaymentPeriodModel')->save($id, $data);
-            return ['message' => 'Payment schedule saved.'];
+            // Deliver after commit; provider failure must not undo a saved schedule.
+            try { $this->call->model('NotificationModel')->deliver_pending(); }
+            catch (Throwable $error) { error_log('Payment window push delivery deferred: ' . get_class($error)); }
+            return ['message' => 'Payment window saved. Student notifications have been queued.'];
         }, 'ORGANIZATION');
     }
 

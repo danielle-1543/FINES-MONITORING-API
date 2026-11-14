@@ -51,6 +51,12 @@ class AttendanceModel extends Model
                     $this->db->commit();
                     continue;
                 }
+                $periods = $this->call->model('PaymentPeriodModel');
+                $periodId = empty($event['academic_period_id']) ? null : (int) $event['academic_period_id'];
+                // Keep absence history, but never introduce a charge during a payment
+                // window or retroactively charge for an event ending inside one.
+                $canCharge = $periods->fine_recording_open((int) $event['org_user_id'], $periodId, $now)
+                    && $periods->fine_recording_open((int) $event['org_user_id'], $periodId, $event['scan_ends_at']);
                 $insert = $this->db->raw("INSERT IGNORE INTO org_scan_records (event_id,student_id,recorded_by,record_type,fine_amount,recorded_at,attendance_status,academic_period_id,legacy_assessment)
                 SELECT r.event_id,r.student_id,?,'ATTENDANCE',?,?,'ABSENT',?,? FROM org_event_roster r
                 JOIN students st ON st.id=r.student_id
@@ -59,7 +65,7 @@ class AttendanceModel extends Model
                 AND NOT (st.year_level='Graduated' AND EXISTS (SELECT 1 FROM student_change_history h
                     WHERE h.student_id=r.student_id AND h.reason='GRADUATED' AND h.changed_at<=?))", [
                     $event['org_user_id'],
-                    $event['absence_fine_amount'],
+                    $canCharge ? $event['absence_fine_amount'] : '0.00',
                     $event['scan_ends_at'],
                     $event['academic_period_id'],
                     empty($event['academic_period_id']) ? 1 : 0,

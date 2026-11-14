@@ -493,6 +493,8 @@ class OrgEventModel extends Model
     public function preview_scan(int $orgId, array $data): array
     {
         [$event, $student, $fine] = $this->scan_context($orgId, $data, false);
+        $canFine = $this->call->model('PaymentPeriodModel')->fine_recording_open($orgId, empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
+        if (!$canFine && $event['event_type'] === 'VIOLATION') $this->call->model('PaymentPeriodModel')->require_fine_recording($orgId, empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
         return [
             'student' => array_intersect_key($student, array_flip([
                 'student_number',
@@ -504,7 +506,8 @@ class OrgEventModel extends Model
             'event_type' => $event['event_type'],
             'event_name' => $event['name'],
             'fine_amount' => $fine,
-            'violation_types' => $this->violation_types($orgId),
+            'fines_locked' => !$canFine,
+            'violation_types' => $canFine ? $this->violation_types($orgId) : [],
             'default_violation_ids' => $event['event_type'] === 'VIOLATION' ? [
                 (int) $event['violation_type_id']
             ] : []
@@ -533,6 +536,7 @@ class OrgEventModel extends Model
         $periodId = $eventId ? ($this->event($orgId, $eventId)['academic_period_id'] ?? null)
             : $this->call->model('AcademicPeriodModel')->recording_period(null, substr($now, 0, 10));
         $this->call->model('AcademicPeriodModel')->require_student_period($studentId, $periodId ? (int) $periodId : null);
+        if ($types) $this->call->model('PaymentPeriodModel')->require_fine_recording($orgId, $periodId ? (int) $periodId : null);
         foreach ($types as $type) {
             $this->db->table('org_violation_records')
                 ->insert([
@@ -628,6 +632,7 @@ class OrgEventModel extends Model
         return $this->write($orgId, function () use ($orgId, $data) {
             // Recheck status, window, ownership and duplicates at confirmation time.
             [$event, $student, $fine, $now] = $this->scan_context($orgId, $data, true);
+            if ($event['event_type'] === 'VIOLATION') $this->call->model('PaymentPeriodModel')->require_fine_recording($orgId, empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
             $this->call->model('AcademicPeriodModel')->require_student_period((int) $student['id'], empty($event['academic_period_id']) ? null : (int) $event['academic_period_id']);
             $types = $this->selected_types($orgId, $data);
             if ($event['event_type'] === 'VIOLATION') {
@@ -670,6 +675,8 @@ class OrgEventModel extends Model
 
     public function preview_violation(int $orgId, array $data): array
     {
+        $current = $this->call->model('AcademicPeriodModel')->current();
+        $this->call->model('PaymentPeriodModel')->require_fine_recording($orgId, $current ? (int) $current['id'] : null);
         $token = $this->text($data, 'qr_token');
         if (!preg_match('/^[a-f0-9]{64}$/i', $token)) {
             throw new DomainException('Invalid QR token.', 422);
@@ -704,6 +711,8 @@ class OrgEventModel extends Model
                 throw new DomainException('Select at least one violation.', 422);
             }
             $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+            $current = $this->call->model('AcademicPeriodModel')->current();
+            $this->call->model('PaymentPeriodModel')->require_fine_recording($orgId, $current ? (int) $current['id'] : null);
             $confirmation = $this->duplicate_confirmation($orgId, (int) $student['id'], $types, $now, $data);
             if ($confirmation) {
                 return $confirmation;

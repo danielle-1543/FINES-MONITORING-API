@@ -14,6 +14,21 @@ class PaymentPeriodModel extends Model
             ->get_all() ?: [];
     }
 
+    public function fine_recording_open(int $orgId, ?int $academicId, ?string $at = null): bool
+    {
+        $at = $at ?? (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+        $query = $this->db->table('organization_payment_periods')->where('org_user_id', $orgId)
+            ->where('opens_at', '<=', $at)->where('closes_at', '>', $at);
+        if ($academicId) $query->where('academic_period_id', $academicId);
+        // Legacy events have no semester reference; they must not bypass an open window.
+        return $query->count() === 0;
+    }
+
+    public function require_fine_recording(int $orgId, ?int $academicId): void
+    {
+        if (!$this->fine_recording_open($orgId, $academicId)) throw new DomainException('New fines are locked while this organization’s payment window is open. Attendance without fines can still be recorded.', 409);
+    }
+
     private function date_value($value, bool $withTime = false): string
     {
         $format = $withTime ? 'Y-m-d H:i:s' : 'Y-m-d';
@@ -35,15 +50,32 @@ class PaymentPeriodModel extends Model
         $academic = null;
         CalendarDatePolicy::assertNotPastDay($opens, 'Payment opening date');
         CalendarDatePolicy::assertNotPastDay($closes, 'Payment closing date');
-        if (empty($input['id'])) $academic = $this->call->model('AcademicPeriodModel')->period((int) ($input['academic_period_id'] ?? 0), true);
+
         if ($opens >= $closes) {
             throw new DomainException('Payment closing time must be after opening time.', 422);
         }
         $this->db->transaction();
         try {
-            // Serialize schedule changes with payment submissions for this organization.
+            // Follow semester rollover lock order before locking the organization.
+            $this->db->raw("SELECT id FROM users WHERE role='ADMIN' ORDER BY id LIMIT 1 FOR UPDATE");
+            // Serialize schedule changes with fine recording and payment submissions.
             $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [$orgId]);
             $existing = $this->periods($orgId);
+            $id = (int) ($input['id'] ?? 0);
+            $old = $id ? $this->db->table('organization_payment_periods')->where('id', $id)->where('org_user_id', $orgId)->get() : null;
+            if ($id && !$old) throw new DomainException('Payment window not found.', 404);
+            $academic = $this->call->model('AcademicPeriodModel')->current();
+            $periodId = (int) ($old['academic_period_id'] ?? $input['academic_period_id'] ?? 0);
+            if (!$academic || $academic['status'] !== 'OPEN' || (int) $academic['id'] !== $periodId) {
+                throw new DomainException('Payment windows can only be set for the open current academic semester.', 409);
+            }
+            foreach ($existing as $other) {
+                if ((int) $other['id'] !== $id && (int) ($other['academic_period_id'] ?? 0) === $periodId
+                    && $opens < $other['closes_at'] && $closes > $other['opens_at']) {
+                    throw new DomainException('Payment windows for this organization and semester must not overlap.', 409);
+                }
+            }
+            $changed = !$old || $old['opens_at'] !== $opens || $old['closes_at'] !== $closes;
             if (!empty($input['id'])) {
                 $id = filter_var($input['id'], FILTER_VALIDATE_INT);
                 $period = array_values(array_filter($existing, static fn ($row) => (int) $row['id'] === $id));
@@ -58,8 +90,6 @@ class PaymentPeriodModel extends Model
                         'closes_at' => $closes,
                     ]);
             } else {
-                if ($this->db->table('organization_payment_periods')->where('org_user_id', '=', $orgId)
-                    ->where('academic_period_id', '=', $academic['id'])->count()) throw new DomainException('This organization already has a schedule for this academic semester. Edit its payment window instead.', 409);
                 $label = $academic['label'];
                 if ($label === '' || mb_strlen($label) > 100) {
                     throw new DomainException('Enter a semester name of up to 100 characters.', 422);
@@ -70,7 +100,10 @@ class PaymentPeriodModel extends Model
                 if ($start > $end) {
                     throw new DomainException('Choose a closing date after the previous schedule’s coverage, or edit its payment window.', 409);
                 }
-                $cap = $input['cap_amount'] ?? '';
+                $sameSemester = array_values(array_filter($existing, static fn ($row) => (int) ($row['academic_period_id'] ?? 0) === $periodId));
+                usort($sameSemester, static fn ($a, $b) => (int) $a['id'] <=> (int) $b['id']);
+                // All windows share the original semester cap; never reset a cap per window.
+                $cap = $sameSemester ? $sameSemester[0]['cap_amount'] : ($input['cap_amount'] ?? '');
                 if ($cap !== '' && $cap !== null && (
                     !is_string($cap)
                     || !preg_match('/^\d{1,8}(?:\.\d{1,2})?$/', $cap)
@@ -122,6 +155,8 @@ class PaymentPeriodModel extends Model
                         'cap_amount' => $cap,
                     ]);
             }
+            if (!$id) $id = (int) $this->db->last_id();
+            if ($changed) $this->call->model('NotificationModel')->payment_window($orgId, $id, $academic, $opens, $closes);
             $this->db->commit();
         } catch (Throwable $error) {
             $this->db->roll_back();
@@ -144,6 +179,21 @@ class PaymentPeriodModel extends Model
 
     public static function calculate(array $rows, array $periods, string $now): array
     {
+        // Prefer an open window, otherwise the next opening, then the latest closed.
+        // Cap grouping below stays at semester scope regardless of the chosen window.
+        usort($periods, static function ($a, $b) use ($now) {
+            $rank = static fn ($p) => $now >= $p['opens_at'] && $now < $p['closes_at'] ? 0 : ($now < $p['opens_at'] ? 1 : 2);
+            $ra = $rank($a); $rb = $rank($b);
+            if ($ra !== $rb) return $ra <=> $rb;
+            return ($ra === 2 ? strcmp($b['closes_at'], $a['closes_at']) : strcmp($a['opens_at'], $b['opens_at'])) ?: ((int) $a['id'] <=> (int) $b['id']);
+        });
+        $semesterCaps = [];
+        $byId = $periods;
+        usort($byId, static fn ($a, $b) => (int) $a['id'] <=> (int) $b['id']);
+        foreach ($byId as $period) if (!empty($period['academic_period_id'])) {
+            $capKey = $period['org_user_id'] . ':' . $period['academic_period_id'];
+            if (!array_key_exists($capKey, $semesterCaps)) $semesterCaps[$capKey] = $period['cap_amount'];
+        }
         $groups = [];
         foreach ($rows as $index => &$row) {
             $row['discount_amount'] = $row['discount_amount'] ?? '0.00';
@@ -171,8 +221,9 @@ class PaymentPeriodModel extends Model
                 $row['opens_at'] = $period['opens_at'];
                 $row['closes_at'] = $period['closes_at'];
                 $row['payment_window'] = $now < $period['opens_at'] ? 'UPCOMING' : ($now >= $period['closes_at'] ? 'CLOSED' : 'OPEN');
-                $key = ($row['student_id'] ?? 0) . ':' . $period['id'];
-                $groups[$key]['cap'] = $period['cap_amount'];
+                $capKey = $period['org_user_id'] . ':' . ($period['academic_period_id'] ?? 0);
+                $key = ($row['student_id'] ?? 0) . ':' . ($legacy ? 'window:' . $period['id'] : 'semester:' . $capKey);
+                $groups[$key]['cap'] = $legacy ? $period['cap_amount'] : $semesterCaps[$capKey];
                 $groups[$key]['indexes'][] = $index;
                 break;
             }
