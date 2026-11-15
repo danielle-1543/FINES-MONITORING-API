@@ -4,9 +4,14 @@ final class BrevoMailer
 {
     public static function send(string $email, string $code): void
     {
-        $key = getenv('BREVO_API_KEY') ?: '';
-        $sender = getenv('BREVO_SENDER_EMAIL') ?: '';
-        if (!$key || !filter_var($sender, FILTER_VALIDATE_EMAIL) || !function_exists('curl_init')) {
+        $key = trim(getenv('BREVO_API_KEY') ?: '');
+        $sender = trim(getenv('BREVO_SENDER_EMAIL') ?: 'minsufinesmonitoring@gmail.com');
+        $missing = [];
+        if ($key === '') $missing[] = 'BREVO_API_KEY';
+        if (!filter_var($sender, FILTER_VALIDATE_EMAIL)) $missing[] = 'valid BREVO_SENDER_EMAIL';
+        if (!function_exists('curl_init')) $missing[] = 'PHP curl extension';
+        if ($missing) {
+            error_log('Brevo configuration missing: '.implode(', ', $missing).'. Configure the PHP API service environment.');
             throw new DomainException('Email delivery is not configured. Contact the administrator.', 503);
         }
         $curl = curl_init('https://api.brevo.com/v3/smtp/email');
@@ -18,7 +23,7 @@ final class BrevoMailer
             CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15,
             CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json', 'api-key: '.$key],
             CURLOPT_POSTFIELDS => json_encode([
-                'sender' => ['email' => $sender, 'name' => getenv('BREVO_SENDER_NAME') ?: 'Fines Monitoring'],
+                'sender' => ['email' => $sender, 'name' => getenv('BREVO_SENDER_NAME') ?: 'Fines Monitoring System'],
                 'to' => [['email' => $email]], 'subject' => 'Your Fines Monitoring verification code',
                 'textContent' => "Your verification code is {$code}. It expires in 10 minutes. Do not share this code. If you did not request it, ignore this email."
             ], JSON_THROW_ON_ERROR)]);

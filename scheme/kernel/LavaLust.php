@@ -48,7 +48,7 @@ if (file_exists(ROOT_DIR . '.env')) {
         $line = trim($line);
 
         // Skip comments and lines without =
-        if ($line[0] === '#' || !str_contains($line, '=')) continue;
+        if ($line === '' || $line[0] === '#' || !str_contains($line, '=')) continue;
 
         [$key, $value] = explode('=', $line, 2);
         $key   = trim($key);
@@ -56,6 +56,9 @@ if (file_exists(ROOT_DIR . '.env')) {
 
         // Validate key format
         if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key)) continue;
+
+        // Hosting-provider settings take precedence over a bundled/local dotenv file.
+        if (getenv($key) !== false) continue;
 
         // Strip surrounding quotes
         if (strlen($value) >= 2 && in_array($value[0], ['"', "'"], true) && $value[-1] === $value[0]) {
