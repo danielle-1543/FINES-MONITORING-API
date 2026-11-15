@@ -12,16 +12,25 @@ class FineArchiveModel extends Model
             $studentId = filter_var($filters['student_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
             if (!$studentId) throw new DomainException('Choose a valid student.', 422);
         }
+        $search = $filters['search'] ?? '';
+        if (!is_string($search) || mb_strlen($search) > 150) throw new DomainException('Enter a student number, name or section of up to 150 characters.', 422);
+        $search = trim($search);
         $where = []; $params = [];
-        if ($orgId) { $where[] = 'org_user_id=?'; $params[] = $orgId; }
-        if ($studentId) { $where[] = 'student_id=?'; $params[] = $studentId; }
+        if ($orgId) { $where[] = 'sources.org_user_id=?'; $params[] = $orgId; }
+        if ($studentId) { $where[] = 'sources.student_id=?'; $params[] = $studentId; }
         // Historical ownership follows the original organization, not a student's
         // current course after shifting. Student access is always their own ID.
-        $sql = "SELECT student_id FROM (SELECT r.student_id,e.org_user_id FROM org_scan_records r JOIN org_events e ON e.id=r.event_id
+        $sql = "SELECT sources.student_id FROM (SELECT r.student_id,e.org_user_id FROM org_scan_records r JOIN org_events e ON e.id=r.event_id
             UNION ALL SELECT student_id,org_user_id FROM org_violation_records) sources";
+        if ($search !== '') {
+            $sql .= ' JOIN students search_student ON search_student.id=sources.student_id';
+            $where[] = "(LOWER(search_student.student_number) LIKE LOWER(?) ESCAPE '!' OR LOWER(search_student.full_name) LIKE LOWER(?) ESCAPE '!' OR LOWER(search_student.section) LIKE LOWER(?) ESCAPE '!')";
+            $pattern = '%' . str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $search) . '%';
+            array_push($params, $pattern, $pattern, $pattern);
+        }
         if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
         $ids = $this->db->raw('SELECT DISTINCT student_id FROM (' . $sql . ') selected_students LIMIT 2001', $params)->fetchAll(PDO::FETCH_COLUMN);
-        if (count($ids) > 2000) throw new DomainException('Choose a student to narrow this report to 2,000 students or fewer.', 422);
+        if (count($ids) > 2000) throw new DomainException('Search by student number, name or section to narrow this report to 2,000 students or fewer.', 422);
         $periods = $this->call->model('AcademicPeriodModel')->periods();
         $periodMap = array_column($periods, null, 'id');
         $selected = $filters['academic_period_id'] ?? 'all';
@@ -67,17 +76,62 @@ class FineArchiveModel extends Model
                     'full_name' => $fine['full_name'], 'student_number' => $fine['student_number']];
             }
         }
+        // Student-level payment summaries are separate from the allocation audit.
+        // Aggregate from the complete ledger once, not once per claim/item join.
+        $studentTotals = [];
+        foreach ($visible as $fine) {
+            $key = $fine['student_id'] . ':' . $fine['org_user_id'] . ':' . $fine['academic_period_id'];
+            if (!isset($studentTotals[$key])) $studentTotals[$key] = ['total_fine' => 0, 'paid_amount' => 0, 'outstanding' => 0];
+            foreach (['total_fine' => 'payable_amount', 'paid_amount' => 'paid_amount', 'outstanding' => 'outstanding'] as $target => $source) {
+                $studentTotals[$key][$target] += (int) round((float) $fine[$source] * 100);
+            }
+        }
+        $studentPayments = [];
+        foreach ($payments as $payment) {
+            $fine = $byKey[$payment['fine_key']];
+            $key = $payment['student_id'] . ':' . $payment['org_user_id'] . ':' . $fine['academic_period_id'];
+            if (!isset($studentPayments[$key])) $studentPayments[$key] = [
+                'id' => $key, 'academic_period_label' => $fine['academic_period_label'],
+                'academic_period_id' => $fine['academic_period_id'], 'organization_name' => $fine['organization_name'],
+                'student_number' => $fine['student_number'], 'full_name' => $fine['full_name'],
+                'methods' => [], 'references' => [], 'claim_statuses' => [], 'submitted_at' => null, 'reviewed_at' => null,
+            ];
+            $row = &$studentPayments[$key];
+            $row['methods'][$payment['method']] = true;
+            $reference = $payment['reference_number'] ?: ($payment['receipt_number'] ?: '—');
+            $row['references'][$reference] = true;
+            $row['claim_statuses'][$payment['status']] = true;
+            if ($payment['submitted_at'] > ($row['submitted_at'] ?? '')) $row['submitted_at'] = $payment['submitted_at'];
+            if ($payment['status'] === 'CONFIRMED' && $payment['reviewed_at'] > ($row['reviewed_at'] ?? '')) $row['reviewed_at'] = $payment['reviewed_at'];
+            unset($row);
+        }
+        foreach ($studentPayments as $key => &$row) {
+            $totals = $studentTotals[$key];
+            $row['status'] = $totals['outstanding'] === 0 ? ($totals['paid_amount'] > 0 ? 'PAID' : 'SETTLED')
+                : ($totals['paid_amount'] > 0 ? 'PARTIALLY_PAID' : (isset($row['claim_statuses']['PENDING']) ? 'PENDING'
+                    : (count($row['claim_statuses']) === 1 && isset($row['claim_statuses']['CANCELLED']) ? 'CANCELLED' : 'UNPAID')));
+            $row['method'] = implode(' · ', array_keys($row['methods']));
+            $row['reference_number'] = implode(' · ', array_keys($row['references']));
+            foreach (['total_fine', 'paid_amount'] as $field) $row[$field] = number_format($totals[$field] / 100, 2, '.', '');
+            unset($row['methods'], $row['references'], $row['claim_statuses']);
+        }
+        unset($row);
+        $studentPayments = array_values($studentPayments);
         $status = $filters['status'] ?? 'ALL';
         if (!in_array($status, ['ALL', 'PAID', 'UNPAID', 'PARTIALLY_PAID', 'SETTLED'], true)) throw new DomainException('Choose a valid fine status.', 422);
         if ($status !== 'ALL') $visible = array_values(array_filter($visible, fn ($fine) => $fine['settlement_status'] === $status));
         $export = ($filters['export'] ?? '') === '1';
         if ($export && count($visible) > 10000) throw new DomainException('Narrow the export to 10,000 fines or fewer.', 422);
         $page = max(1, (int) ($filters['page'] ?? 1));
-        $pages = max(1, (int) ceil(count($visible) / 20)); $page = min($page, $pages);
+        $pages = max(1, (int) ceil(count($visible) / 10)); $page = min($page, $pages);
         $paymentPage = max(1, (int) ($filters['payment_page'] ?? 1));
-        $paymentPages = max(1, (int) ceil(count($payments) / 20)); $paymentPage = min($paymentPage, $paymentPages);
-        return ['periods' => $periods, 'summaries' => array_values($summaries), 'fines' => $export ? $visible : array_slice($visible, ($page - 1) * 20, 20),
-            'payments' => $export ? $payments : array_slice($payments, ($paymentPage - 1) * 20, 20),
+        $studentPaymentPages = max(1, (int) ceil(count($studentPayments) / 10));
+        $studentPaymentPage = min($paymentPage, $studentPaymentPages);
+        $paymentPages = max(1, (int) ceil(count($payments) / 10)); $paymentPage = min($paymentPage, $paymentPages);
+        return ['periods' => $periods, 'summaries' => array_values($summaries), 'fines' => $export ? $visible : array_slice($visible, ($page - 1) * 10, 10),
+            'student_payments' => $export ? $studentPayments : array_slice($studentPayments, ($studentPaymentPage - 1) * 10, 10),
+            'student_payment_pagination' => ['page' => $studentPaymentPage, 'pages' => $studentPaymentPages, 'total' => count($studentPayments)],
+            'payments' => $export ? $payments : array_slice($payments, ($paymentPage - 1) * 10, 10),
             'pagination' => ['page' => $page, 'pages' => $pages, 'total' => count($visible)],
             'payment_pagination' => ['page' => $paymentPage, 'pages' => $paymentPages, 'total' => count($payments)]];
     }

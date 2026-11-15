@@ -87,6 +87,14 @@ denied(fn () => $payments->submit(1, ['fine_key' => 'ALL', 'organization_id' => 
 $archive = new FineArchiveModel();
 $report = $archive->report(['role' => 'ADMIN', 'sub' => 99], ['academic_period_id' => (string) $second]);
 check(count($report['fines']) === 1 && $report['fines'][0]['settlement_status'] === 'PAID' && count($report['payments']) === 2, 'archives retain paid fine with both partial-payment allocations');
+check(count($report['student_payments']) === 1 && $report['student_payments'][0]['total_fine'] === '60.00'
+    && $report['student_payments'][0]['paid_amount'] === '60.00' && $report['student_payments'][0]['status'] === 'PAID'
+    && $report['student_payments'][0]['student_number'] === $student['student_number'],
+    'student payment report merges partial claims without duplicating semester caps or confirmed payments');
+$paymentExport = $archive->report(['role' => 'ORGANIZATION', 'sub' => 10], ['academic_period_id' => (string) $second, 'export' => '1']);
+check($paymentExport['student_payments'] === $report['student_payments'] && $paymentExport['student_payment_pagination']['total'] === 1,
+    'student payment export and table use the same complete semester summaries');
+check(!$archive->report(['role' => 'ORGANIZATION', 'sub' => 20], [])['student_payments'], 'student payment summaries preserve organization isolation');
 check(!$archive->report(['role' => 'ORGANIZATION', 'sub' => 20], [])['fines'], 'organization cannot read another organization archives');
 $pdo->exec("INSERT INTO org_scan_records VALUES(90,2,2,'ATTENDANCE','0.00','2026-11-15 08:00:00',$second,0,'ABSENT');
     INSERT INTO org_scan_records VALUES(91,999,2,'ATTENDANCE','999.00','2026-11-15 09:00:00',$second,0,'ABSENT');
