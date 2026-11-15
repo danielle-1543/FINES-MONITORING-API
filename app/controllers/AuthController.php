@@ -84,6 +84,13 @@ class AuthController extends Controller
         if (($user['status'] ?? '') !== 'ACTIVE') {
             $this->api->respond_error('Your account is inactive. Contact the administrator.', 403);
         }
+        if (empty($user['email_verified_at'])) {
+            try {
+                $challenge = $this->call->model('EmailOtpModel')->issue($user['email'], 'verify_email', (int)$user['id']);
+                $this->api->respond(['success'=>true, 'verification_required'=>true, 'user_id'=>(int)$user['id']] + $challenge);
+                return;
+            } catch (DomainException $e) { $this->api->respond_error($e->getMessage(), $e->getCode() ?: 503); return; }
+        }
         $allowedRoles = [
             'ADMIN',
             'ORGANIZATION',

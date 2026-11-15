@@ -68,6 +68,7 @@ class AccountSettingsModel extends Model
         if (!preg_match('/^[A-Za-z0-9_.-]{3,50}$/', $username) || strlen($email) > 150 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new DomainException('Enter a valid username and email.', 422);
         }
+        $this->call->model('EmailOtpModel')->protect($id, $data, false);
         $this->db->transaction();
         try {
             $user = $this->user($id, true);
@@ -119,6 +120,7 @@ class AccountSettingsModel extends Model
         if (!is_string($password) || strlen($password) < 8 || strlen($password) > 72 || str_contains($password, "\0") || $password !== ($data['password_confirmation'] ?? null)) {
             throw new DomainException('Enter matching passwords, 8–72 bytes long.', 422);
         }
+        $this->call->model('EmailOtpModel')->protect($id, $data, true);
         $this->db->transaction();
         try {
             $user = $this->user($id, true);

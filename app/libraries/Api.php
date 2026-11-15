@@ -624,11 +624,11 @@ class Api
         }
         if ($this->verify_user) {
             $user = $this->_lava->db->table($this->users_table)
-                ->select('id,role,status,auth_version')
+                ->select('id,role,status,auth_version,email_verified_at')
                 ->where('id', $payload['sub'])
                 ->limit(1)
                 ->get();
-            if (!$user || $user['status'] !== 'ACTIVE' || (int) ($payload['auth_version'] ?? 0) !== (int) $user['auth_version']) {
+            if (!$user || empty($user['email_verified_at']) || $user['status'] !== 'ACTIVE' || (int) ($payload['auth_version'] ?? 0) !== (int) $user['auth_version']) {
                 $this->respond_error('Unauthorized', 401);
             }
             // Server-side values win over whatever the token claims.

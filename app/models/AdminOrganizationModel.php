@@ -253,6 +253,8 @@ class AdminOrganizationModel extends Model
                 throw new DomainException('Username or email is already used.', 409);
             }
             if ($update) {
+                $existingEmail = $this->db->raw('SELECT email FROM users WHERE id=? FOR UPDATE', [$id])->fetchColumn();
+                if (strcasecmp($email, (string)$existingEmail) !== 0) throw new DomainException('Email changes require the account owner to verify the new address in Account Settings.', 422);
                 $this->db->table('users')
                     ->where('id', '=', $id)
                     ->where('role', '=', 'ORGANIZATION')

@@ -76,3 +76,7 @@ Every confirmed action records before/after values, the administrator, note, tim
 These actions update current student details immediately. Academic-term enrollment, future scheduling, historical course membership, and fine discounts are separate features.
 
 Bulk selection snapshots the exact IDs matching the active filters. Apply at least one filter to use Select all matching students; individual matching records can then be deselected. Filters changing clear the selection, and the server rechecks filter membership before previewing or saving. Notes are optional for every update reason.
+
+## Email verification and password recovery
+
+See [Brevo email OTP setup](docs/BREVO_EMAIL_OTP.md) before deploying the email verification migration.

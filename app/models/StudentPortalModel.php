@@ -41,7 +41,7 @@ class StudentPortalModel extends StudentAccountModel
             throw new DomainException('Only permitted account fields may be updated.', 422);
         }
         // Lock credentials while verifying the current password and updating the account.
-        $user = $this->db->raw('SELECT id, username, email, role, status, password_hash FROM users WHERE id=? FOR UPDATE', [
+        $user = $this->db->raw('SELECT id, username, email, role, status, password_hash, auth_version FROM users WHERE id=? FOR UPDATE', [
             $userId
         ])->fetch(PDO::FETCH_ASSOC);
         if (!$user || $user['role'] !== 'STUDENT' || $user['status'] !== 'ACTIVE') {
@@ -67,6 +67,7 @@ class StudentPortalModel extends StudentAccountModel
         if (strlen($email) > 150 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new DomainException('Enter a valid email address.', 422);
         }
+        $this->call->model('EmailOtpModel')->protect($userId, $data, false);
         $this->db->transaction();
         try {
             $user = $this->credentials($userId, $data, [
@@ -115,6 +116,7 @@ class StudentPortalModel extends StudentAccountModel
         if (!is_string($confirmation) || $password !== $confirmation) {
             throw new DomainException('Passwords do not match.', 422);
         }
+        $this->call->model('EmailOtpModel')->protect($userId, $data, true);
         $this->db->transaction();
         try {
             $user = $this->credentials($userId, $data, [
@@ -128,7 +130,8 @@ class StudentPortalModel extends StudentAccountModel
             $this->db->table('users')
                 ->where('id', '=', $userId)
                 ->update([
-                    'password_hash' => password_hash($password, PASSWORD_DEFAULT)
+                    'password_hash' => password_hash($password, PASSWORD_DEFAULT),
+                    'auth_version' => (int)$user['auth_version'] + 1
                 ]);
             $this->db->table('refresh_tokens')
                 ->where('user_id', '=', $userId)

@@ -20,14 +20,14 @@ class UserModel extends Model
     public function find_by_login($identifier)
     {
         $user = $this->db->table($this->table)
-            ->select('id, username, email, password_hash, role, status, organization_name')
+            ->select('id, username, email, password_hash, role, status, organization_name, email_verified_at')
             ->where('username', $identifier)
             ->get();
         if (!empty($user)) {
             return $user;
         }
         return $this->db->table($this->table)
-            ->select('id, username, email, password_hash, role, status, organization_name')
+            ->select('id, username, email, password_hash, role, status, organization_name, email_verified_at')
             ->where('email', $identifier)
             ->get();
     }

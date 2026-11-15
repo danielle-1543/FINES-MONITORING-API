@@ -86,3 +86,7 @@ $router->post('/api/org/violations/preview', 'OrganizationController::violation_
 $router->post('/api/org/violations/record', 'OrganizationController::violation_record');
 $router->post('/api/org/scanner/preview', 'OrganizationController::scan_preview');
 $router->post('/api/org/scanner/record', 'OrganizationController::scan_record');
+
+$router->post('/api/auth/otp/request', 'EmailOtpController::request');
+$router->post('/api/auth/otp/verify', 'EmailOtpController::verify');
+$router->post('/api/auth/password/reset', 'EmailOtpController::reset');

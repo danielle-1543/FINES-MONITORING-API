@@ -56,7 +56,7 @@ class AdminOrganizationController extends Controller
         $this->run('POST', function ($data) {
             $this->AdminOrganizationModel->save($data, false);
             return [
-                'message' => 'Organization account created.'
+                'message' => 'Organization account created. The owner must verify their email with a six-digit code at first sign-in.'
             ];
         });
     }

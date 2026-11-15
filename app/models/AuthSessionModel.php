@@ -16,10 +16,10 @@ class AuthSessionModel extends Model
                 throw new DomainException('Session has ended.', 401);
             }
             $user = $this->db->table('users')
-                ->select('id, username, email, role, organization_name, status')
+                ->select('id, username, email, role, organization_name, status, email_verified_at')
                 ->where('id', '=', $userId)
                 ->get(PDO::FETCH_ASSOC);
-            if (!$user || $user['status'] !== 'ACTIVE') {
+            if (!$user || empty($user['email_verified_at']) || $user['status'] !== 'ACTIVE') {
                 throw new DomainException('Account unavailable.', 403);
             }
             if ($user['role'] === 'STUDENT') {

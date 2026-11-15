@@ -102,6 +102,8 @@ class StudentAccountModel extends Model
         if ($password !== $confirmation) {
             throw new DomainException('Passwords do not match.', 422);
         }
+        $this->verify_pair($data);
+        $this->call->model('EmailOtpModel')->consume($data, 'signup', $email);
         $hash = password_hash($password, PASSWORD_DEFAULT);
         $this->db->transaction();
         try {
@@ -122,7 +124,7 @@ class StudentAccountModel extends Model
                 throw new DomainException('That username or email is already registered.', 409);
             }
             // Unique indexes resolve concurrent claims without leaving an orphan student account.
-            $insert = $this->db->raw("INSERT IGNORE INTO users (username,email,password_hash,role,status) VALUES (?,?,?,'STUDENT','ACTIVE')", [
+            $insert = $this->db->raw("INSERT IGNORE INTO users (username,email,password_hash,role,status,email_verified_at) VALUES (?,?,?,'STUDENT','ACTIVE',UTC_TIMESTAMP())", [
                 $username,
                 $email,
                 $hash
