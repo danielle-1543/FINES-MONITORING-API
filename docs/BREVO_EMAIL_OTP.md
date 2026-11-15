@@ -1,6 +1,6 @@
 # Brevo email verification
 
-New student registrations, organization account creation, and forgotten-password resets require at least 12 characters with an ASCII uppercase letter, an ASCII lowercase letter, a digit and a symbol, up to 72 UTF-8 bytes. Spaces are permitted but do not count as symbols. The forms show these requirements and the API enforces them before consuming an OTP. Existing password hashes and login behavior are unchanged; this policy does not force existing users to reset their passwords. Run `php console/test_email_otp.php` to check OTP security, password rules and UTF-8 boundaries.
+New student registrations, organization account creation, forgotten-password resets, and password changes for every role require at least 12 characters with an ASCII uppercase letter, an ASCII lowercase letter, a digit and a symbol, up to 72 UTF-8 bytes. Spaces are permitted but do not count as symbols. The forms show these requirements and the API enforces them before consuming an OTP. Existing password hashes, login behavior and current-password verification are unchanged; this policy does not force existing users to reset their passwords. Run `php console/test_email_otp.php` to check OTP security, password rules and UTF-8 boundaries.
 
 Set these variables in the PHP API environment (local `.env` or Render Environment):
 

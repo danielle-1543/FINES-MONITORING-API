@@ -110,9 +110,7 @@ class StudentPortalModel extends StudentAccountModel
         $this->own($userId);
         $password = $data['password'] ?? null;
         $confirmation = $data['password_confirmation'] ?? null;
-        if (!is_string($password) || strlen($password) < 8 || strlen($password) > 72 || str_contains($password, "\0")) {
-            throw new DomainException('Password must be 8–72 bytes long.', 422);
-        }
+        $this->call->model('UserModel')->validate_password($password);
         if (!is_string($confirmation) || $password !== $confirmation) {
             throw new DomainException('Passwords do not match.', 422);
         }
