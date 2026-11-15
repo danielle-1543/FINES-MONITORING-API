@@ -52,7 +52,8 @@ class EmailOtpController extends Controller
     {
         $this->run(function ($data) {
             $password = $data['password'] ?? null;
-            if (!is_string($password) || strlen($password)<8 || strlen($password)>72 || str_contains($password, "\0") || $password !== ($data['password_confirmation'] ?? null)) throw new DomainException('Enter matching passwords, 8–72 bytes long.', 422);
+            $this->call->model('UserModel')->validate_password($password);
+            if ($password !== ($data['password_confirmation'] ?? null)) throw new DomainException('Passwords do not match.', 422);
             $email = $data['email'] ?? '';
             if (!is_string($email)) throw new DomainException('Invalid email.', 422);
             $user = $this->db->raw("SELECT id,email FROM users WHERE email=? AND status='ACTIVE'", [trim($email)])->fetch(PDO::FETCH_ASSOC);

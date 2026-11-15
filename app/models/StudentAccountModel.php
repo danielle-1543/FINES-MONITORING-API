@@ -96,9 +96,7 @@ class StudentAccountModel extends Model
         if (strlen($email) > 150 || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             throw new DomainException('Enter a valid email address.', 422);
         }
-        if (strlen($password) < 8 || strlen($password) > 72 || str_contains($password, "\0")) {
-            throw new DomainException('Password must be 8–72 bytes long.', 422);
-        }
+        $this->call->model('UserModel')->validate_password($password);
         if ($password !== $confirmation) {
             throw new DomainException('Passwords do not match.', 422);
         }

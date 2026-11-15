@@ -3,6 +3,18 @@ defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 
 class UserModel extends Model
 {
+    public const PASSWORD_REQUIREMENTS = 'Use at least 12 characters with an uppercase letter, a lowercase letter, a number, and a symbol (maximum 72 UTF-8 bytes).';
+
+    public static function validate_password($password): void
+    {
+        if (!is_string($password) || strlen($password) > 72 || str_contains($password, "\0")
+            || preg_match('//u', $password) !== 1 || preg_match_all('/./us', $password) < 12
+            || !preg_match('/[A-Z]/', $password) || !preg_match('/[a-z]/', $password)
+            || !preg_match('/[0-9]/', $password) || !preg_match('/[^\p{L}\p{N}\s]/u', $password)) {
+            throw new DomainException(self::PASSWORD_REQUIREMENTS, 422);
+        }
+    }
+
     // This model uses the existing users table.
 
     protected $table = 'users';

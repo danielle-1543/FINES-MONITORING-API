@@ -185,9 +185,7 @@ class AdminOrganizationModel extends Model
             throw new DomainException('Invalid organization ID.', 422);
         }
         $password = $data['password'] ?? '';
-        if (!$update && (strlen($password) < 8 || strlen($password) > 72)) {
-            throw new DomainException('Password must contain 8–72 bytes.', 422);
-        }
+        if (!$update) $this->call->model('UserModel')->validate_password($password);
         if ($update && $password !== '') {
             throw new DomainException('Password changes are not supported by this form.', 422);
         }

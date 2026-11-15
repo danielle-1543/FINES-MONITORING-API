@@ -74,3 +74,18 @@ unset($body['expires_in'],$body['resend_after']);
 $model->protect(1,$body,false);
 check(!isset($body['otp']) && !isset($body['challenge_id']),'verified transport fields removed before account validation');
 echo "Email OTP security tests passed.\n";
+
+require_once dirname(__DIR__).'/app/models/UserModel.php';
+
+
+$invalid = [null, [], '', 'Short1!', 'strongpass1!', 'STRONGPASS1!', 'StrongPass!!', 'StrongPass12', 'StrongPass1 ', 'StrongPass1é', "StrongPass1!\0", "StrongPass1!\xFF", 'Aa1!'.str_repeat('a',69), 'Aa1!'.str_repeat('é',35), 'Aa1!'.str_repeat('😀',7)];
+foreach ($invalid as $password) {
+    try { UserModel::validate_password($password); }
+    catch (DomainException $e) {
+        if ($e->getCode() !== 422 || $e->getMessage() !== UserModel::PASSWORD_REQUIREMENTS) throw new RuntimeException('Unexpected validation error.');
+        continue;
+    }
+    throw new RuntimeException('An invalid password was accepted.');
+}
+foreach (['StrongPass1!', 'Long passphrase 1!', 'Aa1!'.str_repeat('a',68), 'Aa1!'.str_repeat('é',34), 'Aa1!'.str_repeat('😀',8), ' StrongPass1! '] as $password) UserModel::validate_password($password);
+echo 'PASS: password complexity, character count, UTF-8 byte boundaries, and invalid types.'.PHP_EOL;
