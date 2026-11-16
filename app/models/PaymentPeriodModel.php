@@ -43,7 +43,7 @@ class PaymentPeriodModel extends Model
         return $value;
     }
 
-    public function save(int $orgId, array $input): array
+    public function save(int $orgId, array $input): void
     {
         $opens = $this->date_value($input['opens_at'] ?? null, true);
         $closes = $this->date_value($input['closes_at'] ?? null, true);
@@ -76,7 +76,6 @@ class PaymentPeriodModel extends Model
                 }
             }
             $changed = !$old || $old['opens_at'] !== $opens || $old['closes_at'] !== $closes;
-            $important = $changed;
             if (!empty($input['id'])) {
                 $id = filter_var($input['id'], FILTER_VALIDATE_INT);
                 $period = array_values(array_filter($existing, static fn ($row) => (int) $row['id'] === $id));
@@ -159,7 +158,6 @@ class PaymentPeriodModel extends Model
             if (!$id) $id = (int) $this->db->last_id();
             if ($changed) $this->call->model('NotificationModel')->payment_window($orgId, $id, $academic, $opens, $closes);
             $this->db->commit();
-            return ['id' => (int) $id, 'created' => !$old, 'important_change' => $important, 'academic_period_id' => (int) ($academic['id'] ?? 0)];
         } catch (Throwable $error) {
             $this->db->roll_back();
             throw $error;

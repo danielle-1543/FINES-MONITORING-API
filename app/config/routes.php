@@ -58,8 +58,6 @@ $router->get('/api/admin/organizations/export', 'AdminOrganizationController::ex
 $router->post('/api/admin/organizations/create', 'AdminOrganizationController::create');
 $router->post('/api/admin/organizations/update', 'AdminOrganizationController::update');
 $router->post('/api/admin/organizations/delete', 'AdminOrganizationController::delete');
-$router->get('/api/admin/organizations/email-senders', 'AdminOrganizationController::email_senders');
-$router->post('/api/admin/organizations/email-sender', 'AdminOrganizationController::assign_email_sender');
 $router->get('/api/admin/dashboard/account-stats', 'AdminDashboardController::account_stats');
 // Admin student management.
 $router->get('/api/admin/students', 'StudentController::index');
@@ -87,8 +85,6 @@ $router->get('/api/org/records', 'OrganizationController::records');
 $router->get('/api/org/records/export', 'OrganizationController::export_records');
 $router->get('/api/org/students', 'OrganizationController::students');
 $router->get('/api/org/students/export', 'OrganizationController::export_students');
-$router->get('/api/org/email-sender', 'OrganizationController::email_sender');
-$router->post('/api/org/fines/reminder', 'OrganizationController::send_fine_reminder');
 $router->post('/api/org/violations/preview', 'OrganizationController::violation_preview');
 $router->post('/api/org/violations/record', 'OrganizationController::violation_record');
 $router->post('/api/org/scanner/preview', 'OrganizationController::scan_preview');
