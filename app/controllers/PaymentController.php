@@ -105,10 +105,16 @@ class PaymentController extends Controller
     public function save_period(): void
     {
         $this->run('POST', function ($id, $data) {
-            $this->call->model('PaymentPeriodModel')->save($id, $data);
+            $result = $this->call->model('PaymentPeriodModel')->save($id, $data);
             // Deliver after commit; provider failure must not undo a saved schedule.
             try { $this->call->model('NotificationModel')->deliver_pending(); }
             catch (Throwable $error) { error_log('Payment window push delivery deferred: ' . get_class($error)); }
+            // Send payment schedule emails after successful save (org-scoped; USG/all-scope to university).
+            // Avoid duplicates on refresh and only notify on create or important detail changes.
+            if (!empty($result['id']) && (!empty($result['created']) || !empty($result['important_change']))) {
+                try { $this->call->model('OrganizationEmailModel')->notify_payment_window($id, (int) $result['id'], !empty($result['created']), !empty($result['important_change'])); }
+                catch (Throwable $error) { error_log('Payment window email notification deferred: ' . get_class($error) . ' ' . $error->getMessage()); }
+            }
             return ['message' => 'Payment window saved. Student notifications have been queued.'];
         }, 'ORGANIZATION');
     }
