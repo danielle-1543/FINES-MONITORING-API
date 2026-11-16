@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once dirname(__DIR__) . '/libraries/OrganizationAccountSchema.php';
 /**
  * Model: AdminDashboardModel
  *
@@ -185,10 +186,11 @@ class AdminDashboardModel extends Model
         foreach ($distribution as $label => $amount) {
             $courseDistribution[] = ['label' => $label, 'count' => $amount];
         }
-        $orgs = (int) $this->db->table('users')
-            ->where('role', '=', 'ORGANIZATION')
-            ->where_null('organization_deleted_at')
-            ->count();
+        $deletionReady = OrganizationAccountSchema::deletion_available($this->db);
+        $orgQuery = $this->db->table('users')
+            ->where('role', '=', 'ORGANIZATION');
+        if ($deletionReady) $orgQuery->where_null('organization_deleted_at');
+        $orgs = (int) $orgQuery->count();
         $total = (int) $this->db->table('activity_logs')
             ->count();
         $perPage = 10;

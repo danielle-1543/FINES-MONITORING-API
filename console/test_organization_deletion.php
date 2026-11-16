@@ -84,4 +84,15 @@ $migrationDb->exec('CREATE TABLE users(id INTEGER PRIMARY KEY)');
 $migration = new Organization_account_deletion();
 $migration->up($migrationDb); $migration->up($migrationDb);
 check((int) $migrationDb->query("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='organization_deleted_at'")->fetchColumn() === 1, 'organization deletion schema migration is additive and idempotent');
+// Simulate an older deployment schema, only inside this in-memory fixture.
+$pdo->exec('ALTER TABLE users DROP COLUMN organization_deleted_at');
+$legacyListing = $model->listing([]);
+check($legacyListing['deletion_available'] === false && $legacyListing['summary']['total'] === 4,
+    'organization listing remains available when the deletion migration is not installed');
+check(count($model->listing([], true)['data']) === 4, 'organization export also works before the new column exists');
+check((new AdminDashboardModel())->overview([])['organization_count'] === 4,
+    'admin dashboard works against the previous database schema');
+$model->save(['id' => 10, 'organization_name' => 'CCS', 'username' => 'ccs-edited', 'email' => 'ccs@example.test', 'organization_scope' => 'ALL'], true);
+check($pdo->query('SELECT username FROM users WHERE id=10')->fetchColumn() === 'ccs-edited', 'existing organization editing works before the migration');
+denied(fn () => $model->delete_account($input, 99), 503, 'only deletion is gated with an actionable setup message before migration');
 echo "PASS: organization deletion, authorization, rollback and history preservation.\n";

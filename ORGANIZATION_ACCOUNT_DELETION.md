@@ -33,6 +33,13 @@ and does not delete any organization. Choose one method:
 The Navicat alternative only adds the column; a later migration-runner invocation
 detects that it already exists and records the migration normally.
 
+The backend also supports a deployment where this column is not present yet:
+dashboard counts, organization listing/export and existing editing continue to
+work, and only organization deletion is unavailable until setup is complete.
+Deletion returns an actionable setup message, rather than causing the dashboard
+or organization list to fail. The UI disables Delete until the backend reports
+that its database schema is ready.
+
 Deploy the PHP backend, then rebuild/deploy React. In Admin → Organizations,
 select **Delete**, check the organization name, and confirm. Existing org history
 remains available through its original records. There is no automatic restore or

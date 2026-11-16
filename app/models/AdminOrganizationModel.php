@@ -1,5 +1,6 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
+require_once dirname(__DIR__) . '/libraries/OrganizationAccountSchema.php';
 
 class AdminOrganizationModel extends Model
 {
@@ -31,7 +32,8 @@ class AdminOrganizationModel extends Model
         }
         // This report uses correlated EXISTS for program fallback and scope locking,
         // plus an explicit LIKE escape character. Keep user values in bound parameters.
-        $where = "role='ORGANIZATION' AND organization_deleted_at IS NULL";
+        $deletionReady = OrganizationAccountSchema::deletion_available($this->db);
+        $where = "role='ORGANIZATION'" . ($deletionReady ? ' AND organization_deleted_at IS NULL' : '');
         $params = [];
         if (trim($search) !== '') {
             $where .= ' AND (organization_name LIKE ? OR username LIKE ? OR email LIKE ?)';
@@ -101,11 +103,11 @@ class AdminOrganizationModel extends Model
             $row['student_access'] = $row['organization_scope'] === 'ALL' ? 'All courses' : implode(', ', $row['organization_programs']);
         }
         unset($row);
-        $summary = $this->db->table('users')
+        $summaryQuery = $this->db->table('users')
             ->select("COUNT(*) AS total,SUM(status='ACTIVE') AS active,SUM(status='INACTIVE') AS inactive")
-            ->where('role', 'ORGANIZATION')
-            ->where_null('organization_deleted_at')
-            ->get();
+            ->where('role', 'ORGANIZATION');
+        if ($deletionReady) $summaryQuery->where_null('organization_deleted_at');
+        $summary = $summaryQuery->get();
         foreach ($summary as & $value) {
             $value = (int) $value;
         }
@@ -113,6 +115,7 @@ class AdminOrganizationModel extends Model
         return [
             'data' => $rows,
             'summary' => $summary,
+            'deletion_available' => $deletionReady,
             'courses' => $this->courses(),
             'program_groups' => $groups,
             'programs' => $catalog['student_programs'],
@@ -136,6 +139,7 @@ class AdminOrganizationModel extends Model
         if (!$id || ($data['confirmed'] ?? null) !== true || !is_string($data['organization_name'] ?? null)) {
             throw new DomainException('Confirm the organization account to delete.', 422);
         }
+        if (!OrganizationAccountSchema::deletion_available($this->db)) throw new DomainException('Organization deletion is not set up yet. Apply the organization_account_deletion database migration first.', 503);
         $this->db->transaction();
         try {
             // Match academic rollover lock order and serialize with all org writes.
@@ -224,7 +228,8 @@ class AdminOrganizationModel extends Model
         try {
             if ($update) {
                 // Lock the scope while checking whether existing records prevent changes.
-                $old = $this->db->raw("SELECT id, status, organization_scope, organization_course, organization_deleted_at FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
+                $deletedColumn = OrganizationAccountSchema::deletion_available($this->db) ? 'organization_deleted_at' : 'NULL AS organization_deleted_at';
+                $old = $this->db->raw("SELECT id, status, organization_scope, organization_course, {$deletedColumn} FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
                     $id
                 ])->fetch(PDO::FETCH_ASSOC);
                 if (!$old || $old['organization_deleted_at'] !== null) {
