@@ -79,4 +79,24 @@ class AdminOrganizationController extends Controller
             ];
         });
     }
+
+    public function email_senders(): void
+    {
+        $this->run('GET', function () {
+            $this->call->model('OrganizationEmailModel');
+            return $this->OrganizationEmailModel->sender_statuses();
+        });
+    }
+
+    public function assign_email_sender(): void
+    {
+        $this->run('POST', function ($data) {
+            $orgId = filter_var($data['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            $code = is_string($data['sender_code'] ?? null) ? trim($data['sender_code']) : '';
+            if (!$orgId || $code === '') throw new DomainException('Select an organization and sender.', 422);
+            $this->call->model('OrganizationEmailModel');
+            $this->OrganizationEmailModel->assign((int) $orgId, $code);
+            return ['message' => 'Organization email sender assigned.'];
+        });
+    }
 }

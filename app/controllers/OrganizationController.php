@@ -236,4 +236,31 @@ class OrganizationController extends Controller
             return $this->OrgEventModel->record_scan($id, $data);
         });
     }
+
+    public function email_sender(): void
+    {
+        $this->call->model('OrganizationEmailModel');
+        $this->run('GET', function ($id) {
+            $info = $this->OrganizationEmailModel->organization_sender($id);
+            $statuses = $this->OrganizationEmailModel->sender_statuses();
+            $verified = null;
+            if (!empty($info['sender_code'])) {
+                foreach ($statuses['senders'] as $sender) {
+                    if (($sender['code'] ?? '') === $info['sender_code']) { $verified = $sender['verified'] ?? null; break; }
+                }
+            }
+            $info['verified_in_brevo'] = $verified;
+            return ['data' => $info];
+        });
+    }
+
+    public function send_fine_reminder(): void
+    {
+        $this->call->model('OrganizationEmailModel');
+        $this->run('POST', function ($id, $data) {
+            $fineKey = is_string($data['fine_key'] ?? null) ? trim($data['fine_key']) : '';
+            if ($fineKey === '') throw new DomainException('Select a fine to remind.', 422);
+            return $this->OrganizationEmailModel->send_reminder($id, $fineKey, $id);
+        });
+    }
 }
