@@ -26,8 +26,10 @@ class AttendanceModel extends Model
     public function finalize(?int $orgId = null): int
     {
         $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
-        $query = $this->db->table('org_events')
-            ->select('id,org_user_id')
+        $query = $this->db->table('org_events e')
+            ->select('e.id,e.org_user_id')
+            ->join('users org', 'org.id=e.org_user_id')
+            ->where('org.status', 'ACTIVE')
             ->where('event_type', 'ATTENDANCE')
             ->where('absence_enabled', 1)
             ->where_null('attendance_finalized_at')
@@ -41,9 +43,13 @@ class AttendanceModel extends Model
             $this->db->transaction();
             try {
                 // Same organization/event lock order as scan confirmation prevents races.
-                $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [
+                $organization = $this->db->raw('SELECT id,status FROM users WHERE id=? FOR UPDATE', [
                     $item['org_user_id']
-                ]);
+                ])->fetch(PDO::FETCH_ASSOC);
+                if (!$organization || $organization['status'] !== 'ACTIVE') {
+                    $this->db->commit();
+                    continue;
+                }
                 $event = $this->db->raw('SELECT id, org_user_id, scan_ends_at, attendance_finalized_at, absence_fine_amount, academic_period_id FROM org_events WHERE id=? FOR UPDATE', [
                     $item['id']
                 ])->fetch(PDO::FETCH_ASSOC);

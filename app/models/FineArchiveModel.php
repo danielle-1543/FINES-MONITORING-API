@@ -136,6 +136,76 @@ class FineArchiveModel extends Model
             'payment_pagination' => ['page' => $paymentPage, 'pages' => $paymentPages, 'total' => count($payments)]];
     }
 
+    public function semester_student_export(array $auth, array $filters): array
+    {
+        if (!in_array($auth['role'], ['ADMIN', 'ORGANIZATION'], true)) throw new DomainException('Organization or administrator access required.', 403);
+        $periodId = filter_var($filters['academic_period_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        $orgId = filter_var($filters['org_user_id'] ?? $auth['sub'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($periodId === false || !$orgId) throw new DomainException('Choose an organization and academic semester to export.', 422);
+        if ($auth['role'] === 'ORGANIZATION' && $orgId !== (int) $auth['sub']) throw new DomainException('You may export only your organization’s records.', 403);
+        // Reuse the complete ledger, including existing cap/discount/payment rules.
+        $report = $this->report(['role' => 'ORGANIZATION', 'sub' => $orgId], ['academic_period_id' => (string) $periodId, 'export' => '1', 'search' => $filters['search'] ?? '']);
+        $ids = array_values(array_unique(array_column($report['fines'], 'student_id')));
+        $profiles = $ids ? $this->db->table('students')->select('id,student_number,full_name,course,year_level,section')->in('id', $ids)->get_all() : [];
+        $profiles = array_column($profiles, null, 'id');
+        $current = $this->call->model('AcademicPeriodModel')->current();
+        if (!$current || (int) $current['id'] !== $periodId) {
+            $saved = [];
+            $snapshots = $this->db->table('academic_record_changes')->select('change_details')
+                ->in('source_kind', ['SEMESTER_CHANGE', 'SEMESTER_DELETED'])->where('source_id', $periodId)->order_by('id', 'DESC')->get_all();
+            foreach ($snapshots as $entry) {
+                $snapshot = json_decode($entry['change_details'], true, 512, JSON_THROW_ON_ERROR);
+                foreach ($snapshot['semester_students'] ?? $snapshot['students'] ?? [] as $student) {
+                    if ((int) ($student['current_academic_period_id'] ?? 0) === $periodId && isset($profiles[$student['id']]) && !isset($saved[$student['id']])) $saved[$student['id']] = $student;
+                }
+            }
+            if ($ids) foreach ($this->db->table('student_change_history')->select('student_id,before_values,after_values')->in('student_id', $ids)->order_by('id', 'DESC')->get_all() as $entry) {
+                foreach (['after_values', 'before_values'] as $field) {
+                    $state = json_decode($entry[$field], true, 512, JSON_THROW_ON_ERROR);
+                    if ((int) ($state['current_academic_period_id'] ?? 0) === $periodId && !isset($saved[$entry['student_id']])) $saved[$entry['student_id']] = $state;
+                }
+            }
+            foreach ($profiles as $id => &$profile) {
+                // Never present today's course/year/section as an unknown historic profile.
+                $profile = array_replace($profile, ['course' => 'Not recorded', 'year_level' => 'Not recorded', 'section' => 'Not recorded'], $saved[$id] ?? []);
+            }
+            unset($profile);
+        }
+        $rows = []; $fineStudents = [];
+        foreach ($report['fines'] as $fine) {
+            $id = $fine['student_id']; $fineStudents[$fine['fine_key']] = $id;
+            if (!isset($rows[$id])) {
+                $profile = $profiles[$id] ?? [];
+                $rows[$id] = ['academic_period_label' => $fine['academic_period_label'], 'course' => $profile['course'] ?? '',
+                    'year_level' => in_array($profile['year_level'] ?? '', ['Graduated', 'Graduating'], true) ? '4th Year' : ($profile['year_level'] ?? ''),
+                    'section' => $profile['section'] ?? '', 'full_name' => $profile['full_name'] ?? $fine['full_name'],
+                    'student_number' => $profile['student_number'] ?? $fine['student_number'],
+                    'violation_fines' => 0, 'absence_fines' => 0, 'total_fine' => 0, 'outstanding' => 0, '_paid' => 0, 'paid_at' => ''];
+            }
+            $amount = (int) round((float) $fine['payable_amount'] * 100);
+            $rows[$id][$fine['record_type'] === 'VIOLATION' ? 'violation_fines' : 'absence_fines'] += $amount;
+            $rows[$id]['total_fine'] += $amount;
+            $rows[$id]['outstanding'] += (int) round((float) $fine['outstanding'] * 100);
+            $rows[$id]['_paid'] += (int) round((float) $fine['paid_amount'] * 100);
+        }
+        foreach ($report['payments'] as $payment) {
+            $id = $fineStudents[$payment['fine_key']] ?? null;
+            if ($id !== null && $payment['status'] === 'CONFIRMED' && !empty($payment['reviewed_at']) && $payment['reviewed_at'] > $rows[$id]['paid_at']) $rows[$id]['paid_at'] = $payment['reviewed_at'];
+        }
+        foreach ($rows as &$row) {
+            $row['status'] = $row['outstanding'] === 0 ? ($row['_paid'] > 0 ? 'PAID' : 'SETTLED') : ($row['_paid'] > 0 ? 'PARTIALLY_PAID' : 'UNPAID');
+            if ($row['status'] !== 'PAID') $row['paid_at'] = '';
+            foreach (['violation_fines', 'absence_fines', 'total_fine', 'outstanding'] as $field) $row[$field] = number_format($row[$field] / 100, 2, '.', '');
+            unset($row['_paid']);
+        }
+        unset($row);
+        $rows = array_values($rows);
+        usort($rows, static fn ($a, $b) => [$a['full_name'], $a['student_number']] <=> [$b['full_name'], $b['student_number']]);
+        return ['data' => $rows, 'columns' => ['academic_period_label' => 'Academic Year / Semester', 'course' => 'Course', 'year_level' => 'Year Level',
+            'section' => 'Section', 'full_name' => 'Full Name', 'student_number' => 'Student Number', 'violation_fines' => 'Violation Fines (PHP)',
+            'absence_fines' => 'Absence Fines (PHP)', 'total_fine' => 'Total Fines (PHP)', 'status' => 'Status', 'outstanding' => 'Outstanding Balance (PHP)', 'paid_at' => 'Paid At']];
+    }
+
     private function student_current(int $userId): array
     {
         $studentId = (int) $this->db->table('students')->select('id')->where('user_id', $userId)->get(PDO::FETCH_COLUMN);

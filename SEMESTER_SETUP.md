@@ -123,6 +123,23 @@ The current period cannot be closed alone: switch to another period instead.
 
 ## Payments and reports
 
+In an organization's Fine Archives summary table, the academic-semester button
+downloads that organization/semester's Excel student fine summary. The table itself
+is unchanged. Select All academic periods to find previous academic years/semesters.
+The download includes one row per assessed student (including graduates): academic
+year/semester, course, year level, section, name, student number, violation fines,
+absence fines, total fines, payment status, outstanding balance and Paid At.
+Category totals use amounts after caps/approved discounts and add up to Total Fines.
+Only confirmed payments reduce the outstanding balance. Paid At is the latest
+confirmed verification timestamp for a fully paid balance; unpaid, partially paid
+and discount-only settled rows leave it blank. Missing verification dates are not
+guessed. Historical profiles come from saved semester snapshots or student change
+history; unavailable historical course/year/section are labelled Not recorded.
+The optional student search applies to the download, but table pagination and the
+detail fine-status filter do not truncate semester totals. Organizations cannot
+export another organization's records. Student accounts cannot use this endpoint.
+Run `php console/test_semester_student_export.php` for isolated regression checks.
+
 Organizations may add multiple non-overlapping payment windows in the open current
 semester. A subsequent window inherits the original cap; caps, verified payments
 and pending allocations do not reset between windows. Changing the current academic

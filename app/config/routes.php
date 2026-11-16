@@ -9,6 +9,7 @@ $router->get('/api/admin/academic-periods/history', 'AcademicController::history
 $router->get('/api/admin/academic-periods/history/export', 'AcademicController::export_history');
 $router->post('/api/admin/academic-periods/history/delete', 'AcademicController::delete_history');
 $router->get('/api/fine-archives', 'AcademicController::archives');
+$router->get('/api/fine-archives/semester-export', 'AcademicController::semester_students');
 $router->get('/api/admin/academic-periods/legacy', 'AcademicController::legacy');
 $router->post('/api/admin/academic-periods/classify', 'AcademicController::classify');
 // Public login endpoint: successful login returns JWT tokens.
@@ -56,6 +57,7 @@ $router->get('/api/admin/organizations', 'AdminOrganizationController::index');
 $router->get('/api/admin/organizations/export', 'AdminOrganizationController::export');
 $router->post('/api/admin/organizations/create', 'AdminOrganizationController::create');
 $router->post('/api/admin/organizations/update', 'AdminOrganizationController::update');
+$router->post('/api/admin/organizations/delete', 'AdminOrganizationController::delete');
 $router->get('/api/admin/dashboard/account-stats', 'AdminDashboardController::account_stats');
 // Admin student management.
 $router->get('/api/admin/students', 'StudentController::index');

@@ -61,6 +61,15 @@ class AdminOrganizationController extends Controller
         });
     }
 
+    public function delete(): void
+    {
+        $this->run('POST', function ($data) {
+            $auth = $this->api->require_jwt();
+            $this->AdminOrganizationModel->delete_account($data, (int) $auth['sub']);
+            return ['message' => 'Organization account deleted. Access is revoked; historical records are preserved.'];
+        });
+    }
+
     public function update(): void
     {
         $this->run('POST', function ($data) {

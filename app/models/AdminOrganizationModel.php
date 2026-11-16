@@ -31,7 +31,7 @@ class AdminOrganizationModel extends Model
         }
         // This report uses correlated EXISTS for program fallback and scope locking,
         // plus an explicit LIKE escape character. Keep user values in bound parameters.
-        $where = "role='ORGANIZATION'";
+        $where = "role='ORGANIZATION' AND organization_deleted_at IS NULL";
         $params = [];
         if (trim($search) !== '') {
             $where .= ' AND (organization_name LIKE ? OR username LIKE ? OR email LIKE ?)';
@@ -104,6 +104,7 @@ class AdminOrganizationModel extends Model
         $summary = $this->db->table('users')
             ->select("COUNT(*) AS total,SUM(status='ACTIVE') AS active,SUM(status='INACTIVE') AS inactive")
             ->where('role', 'ORGANIZATION')
+            ->where_null('organization_deleted_at')
             ->get();
         foreach ($summary as & $value) {
             $value = (int) $value;
@@ -127,6 +128,34 @@ class AdminOrganizationModel extends Model
                 'student_access' => 'Student Access'
             ]
         ];
+    }
+
+    public function delete_account(array $data, int $adminId): void
+    {
+        $id = filter_var($data['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!$id || ($data['confirmed'] ?? null) !== true || !is_string($data['organization_name'] ?? null)) {
+            throw new DomainException('Confirm the organization account to delete.', 422);
+        }
+        $this->db->transaction();
+        try {
+            // Match academic rollover lock order and serialize with all org writes.
+            $admin = $this->db->raw("SELECT id FROM users WHERE id=? AND role='ADMIN' AND status='ACTIVE' FOR UPDATE", [$adminId])->fetchColumn();
+            if (!$admin) throw new DomainException('Administrator access required.', 403);
+            $org = $this->db->raw("SELECT id,organization_name,organization_deleted_at FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [$id])->fetch(PDO::FETCH_ASSOC);
+            if (!$org) throw new DomainException('Organization account not found.', 404);
+            if ($org['organization_deleted_at'] !== null) { $this->db->commit(); return; }
+            if ($org['organization_name'] !== $data['organization_name']) throw new DomainException('The organization details changed. Refresh and confirm again.', 409);
+            if ($this->db->table('payment_claims')->where('org_user_id', $id)->where('status', 'PENDING')->count()) {
+                throw new DomainException('Resolve this organization’s pending payment claims before deleting its account.', 409);
+            }
+            $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+            $this->db->raw("UPDATE users SET status='INACTIVE',organization_deleted_at=?,auth_version=auth_version+1 WHERE id=? AND role='ORGANIZATION'", [$now, $id]);
+            $this->db->table('refresh_tokens')->where('user_id', $id)->delete();
+            $this->db->table('email_otps')->where('user_id', $id)->delete();
+            $this->call->model('ActivityLogModel')->record('Deleted organization account #' . $id . ': ' . mb_substr($org['organization_name'], 0, 95), $adminId);
+            // Keep the users row and all linked org/financial records for history.
+            $this->db->commit();
+        } catch (Throwable $error) { $this->db->roll_back(); throw $error; }
     }
 
     public function save(array $data, bool $update): void
@@ -195,10 +224,10 @@ class AdminOrganizationModel extends Model
         try {
             if ($update) {
                 // Lock the scope while checking whether existing records prevent changes.
-                $old = $this->db->raw("SELECT id, status, organization_scope, organization_course FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
+                $old = $this->db->raw("SELECT id, status, organization_scope, organization_course, organization_deleted_at FROM users WHERE id=? AND role='ORGANIZATION' FOR UPDATE", [
                     $id
                 ])->fetch(PDO::FETCH_ASSOC);
-                if (!$old) {
+                if (!$old || $old['organization_deleted_at'] !== null) {
                     throw new DomainException('Organization not found.', 404);
                 }
                 if (!array_key_exists('status', $data)) {

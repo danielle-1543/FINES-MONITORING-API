@@ -187,6 +187,7 @@ class AdminDashboardModel extends Model
         }
         $orgs = (int) $this->db->table('users')
             ->where('role', '=', 'ORGANIZATION')
+            ->where_null('organization_deleted_at')
             ->count();
         $total = (int) $this->db->table('activity_logs')
             ->count();

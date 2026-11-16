@@ -28,6 +28,7 @@ class AcademicController extends Controller
     public function export_history(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->semester_export((int) ($_GET['id'] ?? 0)), true); }
     public function delete_history(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->delete_semester_history($input, (int) $auth['sub']), true); }
     public function archives(): void { $this->run('GET', fn ($auth) => $this->call->model('FineArchiveModel')->report($auth, $_GET)); }
+    public function semester_students(): void { $this->run('GET', fn ($auth) => $this->call->model('FineArchiveModel')->semester_student_export($auth, $_GET)); }
     public function legacy(): void { $this->run('GET', fn () => $this->call->model('AcademicPeriodModel')->legacy_sources(), true); }
     public function classify(): void { $this->run('POST', fn ($auth, $input) => $this->call->model('AcademicPeriodModel')->classify($input, (int) $auth['sub']), true); }
 }
