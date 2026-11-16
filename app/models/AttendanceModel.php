@@ -63,7 +63,7 @@ class AttendanceModel extends Model
                 LEFT JOIN org_scan_records s ON s.event_id=r.event_id AND s.student_id=r.student_id
                 WHERE r.event_id=? AND s.id IS NULL
                 AND NOT (st.year_level='Graduated' AND EXISTS (SELECT 1 FROM student_change_history h
-                    WHERE h.student_id=r.student_id AND h.reason='GRADUATED' AND h.changed_at<=?))", [
+                    WHERE h.student_id=r.student_id AND h.reason IN ('GRADUATED','AUTO_GRADUATED') AND h.changed_at<=?))", [
                     $event['org_user_id'],
                     $canCharge ? $event['absence_fine_amount'] : '0.00',
                     $event['scan_ends_at'],

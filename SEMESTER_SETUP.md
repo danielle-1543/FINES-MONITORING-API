@@ -67,6 +67,24 @@ the numbers increasing, decreasing and being restored from saved records.
 Section, course, accounts and QR codes stay unchanged. Use Edit Profile or
 Multiple edits for retained students, exceptions, course or section changes.
 
+### Graduating students and automatic graduation
+
+Before advancing the academic year, select fourth-year students in Student
+Management and choose **Edit Profile / Multiple edits → Mark as Graduating**.
+Review and confirm. They remain active and continue into another semester in the
+same academic year. On advancement to a later academic year, confirmation shows
+how many will become Graduated. Those students remain assigned to their final
+semester and are included in its frozen export as fourth-year Graduated students.
+Graduating uses the existing year-level/status field; no migration is required.
+
+Reopening a semester where an automatically graduated student was Graduating
+restores that status and semester assignment. Advancing forward graduates them
+again. Saved exports remain frozen. This restoration uses student change history,
+so removing a saved export does not affect it. Existing manually graduated students
+remain archived unless the administrator explicitly corrects their profile.
+Use the Graduating and Graduated year-level filters to find each group.
+Run `php console/test_graduating_rollover.php` for isolated regression checks.
+
 ### Manually archive graduates
 
 In Student Management, filter 4th Year, select students and use **Multiple edits →
@@ -96,6 +114,11 @@ only in their final assigned semester. The file uses the frozen snapshot; later
 profile edits do not change it. Counts of preserved operational records remain visible.
 Older snapshots export only their original saved rows and show a warning when
 graduate inclusion was not captured. Earlier student snapshots are not guessed.
+Academic-period and saved-export lists show five entries per page. **Delete saved
+export** requires confirmation and removes only that saved export from the list;
+the original snapshot and deleting administrator/time are retained for audit.
+Underlying students, periods, attendance, fines, receipts, payments, notifications
+and student change history remain intact.
 The current period cannot be closed alone: switch to another period instead.
 
 ## Payments and reports

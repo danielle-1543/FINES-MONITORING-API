@@ -16,6 +16,7 @@ class StudentModel extends Model
             'SHIFT_COURSE' => ['course', 'year_level', 'section', 'current_academic_period_id'],
             'TRANSFERRED_OUT' => [],
             'DROPPED_OUT' => [],
+            'GRADUATING' => [],
             'GRADUATED' => [],
             'OTHER_CORRECTION' => ['student_number', 'full_name', 'year_level', 'section', 'current_academic_period_id'],
             'DEACTIVATE' => [],
@@ -124,7 +125,9 @@ class StudentModel extends Model
             $periodLabels = array_column($this->call->model('AcademicPeriodModel')->periods(), 'label', 'id');
             foreach ($students as $student) {
                 $student['academic_period_label'] = $periodLabels[$student['current_academic_period_id'] ?? 0] ?? 'Not assigned';
-                if ($reason === 'GRADUATED' && $student['year_level'] !== '4th Year') throw new DomainException('Select fourth-year students to mark as Graduated. Correct individual year levels first if needed.', 409);
+                if ($reason === 'GRADUATING' && $student['year_level'] !== '4th Year') throw new DomainException('Select fourth-year students to mark as Graduating.', 409);
+                if ($reason === 'GRADUATING' && !isset($periodLabels[$student['current_academic_period_id'] ?? 0])) throw new DomainException('Assign an academic year and semester before marking a student as Graduating.', 409);
+                if ($reason === 'GRADUATED' && !in_array($student['year_level'], ['4th Year', 'Graduating'], true)) throw new DomainException('Select fourth-year students to mark as Graduated. Correct individual year levels first if needed.', 409);
                 if ($reason === 'DEACTIVATE' && !in_array($student['departure_reason'], ['TRANSFERRED_OUT', 'DROPPED_OUT'], true)) {
                     throw new DomainException('Deactivation is available only after recording transfer out or dropout for every selected student.', 409);
                 }
@@ -132,6 +135,7 @@ class StudentModel extends Model
                     throw new DomainException('Student number already belongs to another student.', 409);
                 }
                 $after = array_replace($student, $values);
+                if ($reason === 'GRADUATING') $after['year_level'] = 'Graduating';
                 if ($reason === 'GRADUATED') $after['year_level'] = 'Graduated';
                 $after['academic_period_label'] = $periodLabels[$after['current_academic_period_id'] ?? 0] ?? 'Not assigned';
                 if (in_array($reason, ['TRANSFERRED_OUT', 'DROPPED_OUT'], true)) {

@@ -7,6 +7,7 @@ $router->get('/api/academic-periods', 'AcademicController::periods');
 $router->post('/api/admin/academic-periods/save', 'AcademicController::save');
 $router->get('/api/admin/academic-periods/history', 'AcademicController::history');
 $router->get('/api/admin/academic-periods/history/export', 'AcademicController::export_history');
+$router->post('/api/admin/academic-periods/history/delete', 'AcademicController::delete_history');
 $router->get('/api/fine-archives', 'AcademicController::archives');
 $router->get('/api/admin/academic-periods/legacy', 'AcademicController::legacy');
 $router->post('/api/admin/academic-periods/classify', 'AcademicController::classify');
