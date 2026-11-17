@@ -136,6 +136,11 @@ class StudentAccountController extends Controller
     }
     private function refresh_notifications(int $userId): void
     {
+        try {
+            $this->call->model('PaymentPeriodModel')->deliver_announcements();
+        } catch (Throwable $error) {
+            error_log('Payment announcement dispatch deferred: ' . get_class($error));
+        }
         // Request-driven: no extra worker or console command is required.
         $this->call->model('AttendanceModel')->finalize();
         try {

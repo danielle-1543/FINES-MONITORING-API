@@ -1,12 +1,15 @@
 <?php
 defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 require_once dirname(__DIR__) . '/libraries/CalendarDatePolicy.php';
+require_once dirname(__DIR__) . '/libraries/BrevoMailer.php';
 
 class PaymentPeriodModel extends Model
 {
     public function periods(?int $orgId = null): array
     {
-        $query = $this->db->table('organization_payment_periods');
+        // Never return recipient addresses or internal delivery state to the frontend.
+        $query = $this->db->table('organization_payment_periods')
+            ->select('id,org_user_id,academic_period_id,label,semester_start,semester_end,opens_at,closes_at,cap_amount');
         if ($orgId !== null) {
             $query->where('org_user_id', $orgId);
         }
@@ -156,11 +159,125 @@ class PaymentPeriodModel extends Model
                     ]);
             }
             if (!$id) $id = (int) $this->db->last_id();
+            if (!$old) {
+                $this->queue_announcement($orgId, $id);
+            }
             if ($changed) $this->call->model('NotificationModel')->payment_window($orgId, $id, $academic, $opens, $closes);
             $this->db->commit();
         } catch (Throwable $error) {
             $this->db->roll_back();
             throw $error;
+        }
+    }
+
+    public function announcement_recipients(array $org): array
+    {
+        $code = BrevoMailer::organization_code($org);
+        $query = $this->db->table('students s')
+            ->select('s.id,u.email')
+            ->left_join('users u', 'u.id=s.user_id');
+        if ($code !== 'USG') {
+            if (empty($org['allowed_courses'])) {
+                throw new DomainException('No course membership is configured for email recipients.', 503);
+            }
+            $query->in('TRIM(s.course)', $org['allowed_courses']);
+        }
+        $recipients = [];
+        foreach ($query->order_by('s.id', 'ASC')->get_all() as $student) {
+            $email = strtolower(trim($student['email'] ?? ''));
+            if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                error_log('Payment announcement skipped: student ' . (int) $student['id'] . ' has no valid saved email.');
+                continue;
+            }
+            $recipients[$email] = ['email' => $email];
+        }
+        return array_values($recipients);
+    }
+
+    protected function queue_announcement(int $orgId, int $id): void
+    {
+        try {
+            $org = $this->call->model('OrgEventModel')->organization($orgId);
+            $schedule = $this->db->table('organization_payment_periods')->where('id', $id)->get();
+            $sender = BrevoMailer::sender($org);
+            $recipients = $this->announcement_recipients($org);
+            $text = $org['organization_name'] . " payment schedule\n\n"
+                . 'Payment title / academic semester: ' . $schedule['label'] . "\n"
+                . 'Payments open: ' . $schedule['opens_at'] . " (Philippine time)\n"
+                . 'Payment deadline: ' . $schedule['closes_at'] . " (Philippine time)\n";
+            if ($schedule['cap_amount'] !== null) {
+                $text .= 'Semester fine cap: PHP ' . number_format((float) $schedule['cap_amount'], 2)
+                    . ". This is a cap, not a fixed charge.\n";
+            }
+            $text .= "\nLog in to the Fines Monitoring System and open Payment Management to view your actual outstanding balance and available payment methods. Submit payments only within the scheduled window.";
+            $batches = [];
+            foreach (array_chunk($recipients, 50) as $chunk) {
+                $hex = bin2hex(random_bytes(16));
+                $uuid = substr($hex, 0, 8) . '-' . substr($hex, 8, 4) . '-4' . substr($hex, 13, 3)
+                    . '-8' . substr($hex, 17, 3) . '-' . substr($hex, 20);
+                $batches[] = [
+                    'sender' => $sender,
+                    'subject' => $org['organization_name'] . ' — Payment schedule: ' . $schedule['label'],
+                    'textContent' => $text,
+                    'headers' => ['idempotencyKey' => $uuid],
+                    // Separate versions keep each student's address private.
+                    'messageVersions' => array_map(static fn ($recipient) => ['to' => [$recipient]], $chunk),
+                ];
+            }
+            $state = ['batches' => $batches, 'accepted_batches' => 0, 'recipient_count' => count($recipients)];
+            $status = $batches ? 'QUEUED' : 'NO_RECIPIENTS';
+        } catch (Throwable $error) {
+            error_log('Payment announcement preparation failed for schedule ' . $id . ': ' . $error->getMessage());
+            $state = ['error' => 'Announcement preparation failed. See backend logs.'];
+            $status = 'FAILED';
+        }
+        $this->db->table('organization_payment_periods')->where('id', $id)->update([
+            'email_status' => $status,
+            'email_announcement' => json_encode($state, JSON_THROW_ON_ERROR),
+        ]);
+    }
+
+    protected function deliver_announcement(array $payload): void
+    {
+        BrevoMailer::transactional($payload);
+    }
+
+    public function deliver_announcements(?int $orgId = null): void
+    {
+        // One bounded batch per request. Must be called only after schedule commit.
+        $query = $this->db->table('organization_payment_periods')->where('email_status', 'QUEUED');
+        if ($orgId !== null) {
+            $query->where('org_user_id', $orgId);
+        }
+        $row = $query->order_by('id', 'ASC')->get();
+        if (!$row) {
+            return;
+        }
+        $id = (int) $row['id'];
+        $claimed = $this->db->table('organization_payment_periods')->where('id', $id)
+            ->where('email_status', 'QUEUED')->update(['email_status' => 'SENDING']);
+        if ($claimed !== 1) {
+            return;
+        }
+        try {
+            $state = json_decode($row['email_announcement'], true, 512, JSON_THROW_ON_ERROR);
+            $index = $state['accepted_batches'];
+            error_log('Payment announcement dispatch started: schedule ' . $id . ', batch ' . ($index + 1) . '.');
+            $this->deliver_announcement($state['batches'][$index]);
+            $state['accepted_batches']++;
+            $complete = $state['accepted_batches'] === count($state['batches']);
+            if ($complete) {
+                unset($state['batches']);
+            }
+            $this->db->table('organization_payment_periods')->where('id', $id)->update([
+                'email_status' => $complete ? 'SENT' : 'QUEUED',
+                'email_announcement' => json_encode($state, JSON_THROW_ON_ERROR),
+            ]);
+        } catch (Throwable $error) {
+            error_log('Payment announcement delivery failed for schedule ' . $id . ': ' . $error->getMessage());
+            // Do not automatically resend an uncertain delivery after Brevo's 30-minute
+            // idempotency window. FAILED/SENDING batches require provider-log review.
+            $this->db->table('organization_payment_periods')->where('id', $id)->update(['email_status' => 'FAILED']);
         }
     }
 

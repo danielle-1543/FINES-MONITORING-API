@@ -97,15 +97,26 @@ class PaymentController extends Controller
 
     public function periods(): void
     {
-        $this->run('GET', fn ($id) => [
-            'data' => $this->call->model('PaymentPeriodModel')->periods($id)
-        ], 'ORGANIZATION');
+        $this->run('GET', function ($id) {
+            $this->deliver_schedule_emails($id);
+            return ['data' => $this->call->model('PaymentPeriodModel')->periods($id)];
+        }, 'ORGANIZATION');
+    }
+
+    private function deliver_schedule_emails(int $orgId): void
+    {
+        try {
+            $this->call->model('PaymentPeriodModel')->deliver_announcements($orgId);
+        } catch (Throwable $error) {
+            error_log('Payment announcement dispatch deferred: ' . get_class($error));
+        }
     }
 
     public function save_period(): void
     {
         $this->run('POST', function ($id, $data) {
             $this->call->model('PaymentPeriodModel')->save($id, $data);
+            $this->deliver_schedule_emails($id);
             // Deliver after commit; provider failure must not undo a saved schedule.
             try { $this->call->model('NotificationModel')->deliver_pending(); }
             catch (Throwable $error) { error_log('Payment window push delivery deferred: ' . get_class($error)); }
