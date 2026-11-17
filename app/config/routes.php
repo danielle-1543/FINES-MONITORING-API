@@ -30,6 +30,7 @@ $router->get('/api/payments/proof', 'PaymentController::proof');
 $router->get('/api/org/payments', 'PaymentController::claims');
 $router->get('/api/org/payments/periods', 'PaymentController::periods');
 $router->post('/api/org/payments/periods', 'PaymentController::save_period');
+$router->post('/api/org/payments/periods/delete', 'PaymentController::delete_period');
 $router->get('/api/org/fines', 'PaymentController::fines');
 $router->get('/api/org/students/record', 'PaymentController::student_record');
 $router->post('/api/org/students/vouchers', 'PaymentController::add_voucher');

@@ -124,6 +124,18 @@ class PaymentController extends Controller
         }, 'ORGANIZATION');
     }
 
+    public function delete_period(): void
+    {
+        $this->run('POST', function ($id, $data) {
+            $windowId = filter_var($data['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+            if (!$windowId) {
+                throw new DomainException('Select a valid payment window.', 422);
+            }
+            $this->call->model('PaymentPeriodModel')->delete_window($id, $windowId);
+            return ['message' => 'Payment window deleted. Already delivered announcements cannot be recalled.'];
+        }, 'ORGANIZATION');
+    }
+
     public function submit(): void
     {
         $this->run('POST', function ($id, $data) {

@@ -155,3 +155,32 @@ $model->deliver_announcements(10);
 check(count($model->sent) === $before + 2, 'large recipient list sends exactly two bounded batches');
 check(count($model->sent[$before]['messageVersions']) === 50 && count($model->sent[$before + 1]['messageVersions']) === 6, 'batch sizes cover every distinct valid recipient once');
 check($model->sent[$before]['headers']['idempotencyKey'] !== $model->sent[$before + 1]['headers']['idempotencyKey'], 'each batch has a distinct provider idempotency key');
+
+// Deletion authorization and financial-history guards.
+$pdo->exec('CREATE TABLE org_events(id INTEGER PRIMARY KEY,org_user_id INTEGER);
+    CREATE TABLE org_scan_records(id INTEGER PRIMARY KEY,event_id INTEGER,academic_period_id INTEGER,fine_amount TEXT);
+    CREATE TABLE org_violation_records(id INTEGER PRIMARY KEY,org_user_id INTEGER,academic_period_id INTEGER,fine_amount TEXT);
+    CREATE TABLE payment_claims(id INTEGER PRIMARY KEY,org_user_id INTEGER,academic_period_id INTEGER)');
+function deletionDenied(callable $work, int $code, string $label): void {
+    try { $work(); } catch (DomainException $error) {
+        check($error->getCode() === $code, $label);
+        return;
+    }
+    throw new RuntimeException('FAIL: ' . $label);
+}
+$id = (int) $saved['id'];
+deletionDenied(fn () => $model->delete_window(99, $id), 404, 'another organization cannot delete window');
+$pdo->exec("UPDATE organization_payment_periods SET academic_period_id=99");
+deletionDenied(fn () => $model->delete_window(10, $id), 409, 'archived semester protected');
+$pdo->exec("UPDATE organization_payment_periods SET academic_period_id=1,opens_at='2000-01-01 00:00:00'");
+deletionDenied(fn () => $model->delete_window(10, $id), 409, 'already opened window protected');
+$pdo->prepare('UPDATE organization_payment_periods SET opens_at=?,email_status=?')->execute([$input['opens_at'], 'SENDING']);
+deletionDenied(fn () => $model->delete_window(10, $id), 409, 'in-flight announcement protected');
+$pdo->exec("UPDATE organization_payment_periods SET email_status='SENT'; INSERT INTO org_violation_records VALUES(1,10,1,'50.00')");
+deletionDenied(fn () => $model->delete_window(10, $id), 409, 'last window with fines protected');
+$pdo->exec('DELETE FROM org_violation_records; INSERT INTO payment_claims VALUES(1,10,1)');
+deletionDenied(fn () => $model->delete_window(10, $id), 409, 'last window with claims protected');
+$pdo->exec('DELETE FROM payment_claims');
+$model->delete_window(10, $id);
+check($model->periods(10) === [], 'unused future window deletes successfully');
+deletionDenied(fn () => $model->delete_window(10, $id), 404, 'repeated deletion handled without changing other records');

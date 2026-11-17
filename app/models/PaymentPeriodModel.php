@@ -5,6 +5,56 @@ require_once dirname(__DIR__) . '/libraries/BrevoMailer.php';
 
 class PaymentPeriodModel extends Model
 {
+    public function delete_window(int $orgId, int $id): void
+    {
+        $this->db->transaction();
+        try {
+            $this->db->raw("SELECT id FROM users WHERE role='ADMIN' ORDER BY id LIMIT 1 FOR UPDATE");
+            $this->db->raw('SELECT id FROM users WHERE id=? FOR UPDATE', [$orgId]);
+            $window = $this->db->raw('SELECT * FROM organization_payment_periods WHERE id=? AND org_user_id=? FOR UPDATE', [$id, $orgId])->fetch(PDO::FETCH_ASSOC);
+            if (!$window) {
+                throw new DomainException('Payment window not found. Refresh the list.', 404);
+            }
+            $current = $this->call->model('AcademicPeriodModel')->current();
+            if (!$current || $current['status'] !== 'OPEN' || (int) $window['academic_period_id'] !== (int) $current['id']) {
+                throw new DomainException('Archived semester windows cannot be deleted because they preserve historical payment and cap rules.', 409);
+            }
+            $now = (new DateTimeImmutable('now', new DateTimeZone('Asia/Manila')))->format('Y-m-d H:i:s');
+            if ($window['opens_at'] <= $now) {
+                throw new DomainException('A payment window that has already opened cannot be deleted. Its payment history must be preserved.', 409);
+            }
+            if (($window['email_status'] ?? '') === 'SENDING') {
+                throw new DomainException('An announcement is being sent. Try again after delivery finishes.', 409);
+            }
+            $others = $this->db->table('organization_payment_periods')
+                ->where('org_user_id', $orgId)->where('academic_period_id', $current['id'])
+                ->where('id', '<>', $id)->get_all();
+            if (!$others) {
+                // Removing the last window would also remove its semester cap.
+                foreach (['org_scan_records', 'org_violation_records'] as $table) {
+                    $query = $this->db->table($table . ' r')->where('r.academic_period_id', $current['id']);
+                    if ($table === 'org_scan_records') {
+                        $query->join('org_events e', 'e.id=r.event_id')->where('e.org_user_id', $orgId);
+                    } else {
+                        $query->where('r.org_user_id', $orgId);
+                    }
+                    if ($query->select('r.id')->where('r.fine_amount', '>', 0)->limit(1)->get()) {
+                        throw new DomainException('This is the semester’s last payment window and fines already exist. Edit it instead to preserve the cap and balances.', 409);
+                    }
+                }
+                if ($this->db->table('payment_claims')->where('org_user_id', $orgId)
+                    ->where('academic_period_id', $current['id'])->count()) {
+                    throw new DomainException('This payment window is required by existing payment records. Edit it instead.', 409);
+                }
+            }
+            $this->db->table('organization_payment_periods')->where('id', $id)->where('org_user_id', $orgId)->delete();
+            $this->db->commit();
+        } catch (Throwable $error) {
+            $this->db->roll_back();
+            throw $error;
+        }
+    }
+
     public function periods(?int $orgId = null): array
     {
         // Never return recipient addresses or internal delivery state to the frontend.
