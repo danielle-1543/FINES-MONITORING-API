@@ -75,7 +75,12 @@ $model->deliver_announcements(10);
 check(count($model->sent) === 1, 'repeat dispatch does not duplicate accepted batch');
 check($model->sent[0]['sender']['email'] === 'casminsufines@gmail.com', 'payment announcement uses creator sender');
 check(count($model->sent[0]['messageVersions'][0]['to']) === 1, 'recipients cannot see other student email addresses');
-check(str_contains($model->sent[0]['textContent'], '2026-12-07 17:00:00') && str_contains($model->sent[0]['textContent'], 'cap, not a fixed charge'), 'email contains correct deadline and cap meaning');
+check(str_starts_with($model->sent[0]['textContent'], "Dear Students,\n\n")
+    && str_contains($model->sent[0]['textContent'], 'payment period for 2026 First Semester is now officially open.')
+    && str_contains($model->sent[0]['textContent'], 'Payment Period Starts: December 1, 2026, 8:00 AM')
+    && str_contains($model->sent[0]['textContent'], 'Payment Deadline: December 7, 2026, 5:00 PM')
+    && str_ends_with($model->sent[0]['textContent'], "CAS\nFines Monitoring System"),
+    'email uses requested announcement wording and saved schedule details');
 $pdo->exec("UPDATE organization_payment_periods SET email_status=NULL,email_announcement=NULL");
 $orgModel->org = ['organization_name' => 'UNKNOWN','allowed_courses' => ['BSIT']];
 $model->queue(10, 1);

@@ -201,15 +201,20 @@ class PaymentPeriodModel extends Model
             $schedule = $this->db->table('organization_payment_periods')->where('id', $id)->get();
             $sender = BrevoMailer::sender($org);
             $recipients = $this->announcement_recipients($org);
-            $text = $org['organization_name'] . " payment schedule\n\n"
-                . 'Payment title / academic semester: ' . $schedule['label'] . "\n"
-                . 'Payments open: ' . $schedule['opens_at'] . " (Philippine time)\n"
-                . 'Payment deadline: ' . $schedule['closes_at'] . " (Philippine time)\n";
-            if ($schedule['cap_amount'] !== null) {
-                $text .= 'Semester fine cap: PHP ' . number_format((float) $schedule['cap_amount'], 2)
-                    . ". This is a cap, not a fixed charge.\n";
-            }
-            $text .= "\nLog in to the Fines Monitoring System and open Payment Management to view your actual outstanding balance and available payment methods. Submit payments only within the scheduled window.";
+            $formatDate = static fn (string $value): string =>
+                (new DateTimeImmutable($value, new DateTimeZone('Asia/Manila')))
+                    ->format('F j, Y, g:i A');
+            $text = "Dear Students,\n\n"
+                . 'Please be informed that the payment period for ' . $schedule['label']
+                . " is now officially open.\n\n"
+                . 'All concerned students are encouraged to settle their payments within the given period. '
+                . "Please take note of the payment deadline to avoid missing the scheduled payment period.\n\n"
+                . 'Payment Period Starts: ' . $formatDate($schedule['opens_at']) . "\n\n"
+                . 'Payment Deadline: ' . $formatDate($schedule['closes_at']) . "\n\n"
+                . 'Kindly complete your payment on or before the specified deadline to ensure a smooth '
+                . "and hassle-free clearance signing process.\n\n"
+                . "Thank you for your cooperation.\n\n"
+                . $org['organization_name'] . "\nFines Monitoring System";
             $batches = [];
             foreach (array_chunk($recipients, 50) as $chunk) {
                 $hex = bin2hex(random_bytes(16));
