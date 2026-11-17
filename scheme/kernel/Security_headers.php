@@ -61,7 +61,7 @@ class Security_headers
         'hsts_subdomains'    => true,
         'frame_options'      => 'DENY',
         'referrer_policy'    => 'strict-origin-when-cross-origin',
-        'permissions_policy' => 'geolocation=(), microphone=(), camera=(), payment=()',
+        'permissions_policy' => 'geolocation=(), microphone=(), camera=*, payment=()',
         'coop'               => 'same-origin',   // '' to skip (e.g. OAuth popups)
 
         'api_max_body'       => 1048576,

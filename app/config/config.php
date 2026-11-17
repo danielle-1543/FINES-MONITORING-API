@@ -391,7 +391,7 @@ $config['security_headers'] = [
     'trust_proxy'     => false,
 
     // ── Browser features ──
-    'permissions_policy' => 'geolocation=(), microphone=(), camera=(), payment=(), usb=(), '
+    'permissions_policy' => 'geolocation=(), microphone=(), camera=*, payment=(), usb=(), '
                           . 'bluetooth=(), serial=(), accelerometer=(), gyroscope=(), magnetometer=()',
     'referrer_policy'    => 'strict-origin-when-cross-origin',
     'coop'               => 'same-origin',
