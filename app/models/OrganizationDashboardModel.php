@@ -89,12 +89,13 @@ class OrganizationDashboardModel extends Model
 
     private function attendance_query(int $orgId, ?array $courses)
     {
+        $periodId = $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1;
         $query = $this->db->table('org_scan_records r')
             ->join('org_events e', 'e.id=r.event_id')
             ->join('students s', 's.id=r.student_id')
             ->where('e.org_user_id', $orgId)
             ->where('r.record_type', 'ATTENDANCE')
-            ->where('r.academic_period_id', $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1);
+            ->where('r.academic_period_id', $periodId);
         $this->scope_students($query, $courses);
         return $query;
     }

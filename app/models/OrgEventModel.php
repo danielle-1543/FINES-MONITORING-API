@@ -131,6 +131,8 @@ class OrgEventModel extends Model
 
     public function events(int $orgId): array
     {
+        // Complete this lookup before building another query on the shared database object.
+        $periodId = $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1;
         $columns = 'e.id, e.org_user_id, e.name, e.event_type, e.violation_type_id, e.academic_period_id, '
             . 'e.scan_starts_at, e.scan_ends_at, e.session_open, e.created_at, '
             . 'e.absence_enabled, e.attendance_finalized_at, e.absence_fine_amount, v.name, v.fine_amount';
@@ -140,7 +142,7 @@ class OrgEventModel extends Model
             ->left_join('org_violation_types v', 'v.id=e.violation_type_id AND v.org_user_id=e.org_user_id')
             ->left_join('org_scan_records r', 'r.event_id=e.id')
             ->where('e.org_user_id', $orgId)
-            ->where('e.academic_period_id', $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1)
+            ->where('e.academic_period_id', $periodId)
             ->group_by(explode(', ', $columns))
             ->order_by('e.id', 'DESC')
             ->get_all();
