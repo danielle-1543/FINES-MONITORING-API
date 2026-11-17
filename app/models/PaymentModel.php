@@ -3,6 +3,45 @@ defined('PREVENT_DIRECT_ACCESS') OR exit('No direct script access allowed');
 
 class PaymentModel extends Model
 {
+    public function current_semester_fines(array $rows, bool $paymentWindows = false): array
+    {
+        require_once dirname(__DIR__) . '/libraries/CurrentSemesterLedger.php';
+        $academic = $this->call->model('AcademicPeriodModel');
+        $current = $academic->current();
+        $rows = CurrentSemesterLedger::select($rows, $current, $academic->periods());
+        if (!$paymentWindows || !$current) {
+            return $rows;
+        }
+        $schedules = $this->call->model('PaymentPeriodModel')->periods();
+        $now = $this->now();
+        foreach ($rows as &$row) {
+            if (!$row['is_carried_balance']) {
+                continue;
+            }
+            $row['payment_window'] = 'NOT_SCHEDULED';
+            $row['payment_period_id'] = null;
+            $row['opens_at'] = null;
+            $row['closes_at'] = null;
+            foreach ($schedules as $schedule) {
+                if ((int) $schedule['org_user_id'] !== (int) $row['org_user_id']
+                    || (int) $schedule['academic_period_id'] !== (int) $current['id']) {
+                    continue;
+                }
+                $row['payment_period_id'] = (int) $schedule['id'];
+                $row['opens_at'] = $schedule['opens_at'];
+                $row['closes_at'] = $schedule['closes_at'];
+                $row['semester_label'] = $schedule['label'];
+                $row['payment_window'] = $now < $schedule['opens_at'] ? 'UPCOMING'
+                    : ($now >= $schedule['closes_at'] ? 'CLOSED' : 'OPEN');
+                if ($row['payment_window'] === 'OPEN') {
+                    break;
+                }
+            }
+        }
+        unset($row);
+        return $rows;
+    }
+
     public function allocated_payments(): string
     {
         return "SELECT p.student_id,p.org_user_id,p.fine_key,p.amount,p.status FROM payment_claims p
@@ -106,7 +145,7 @@ class PaymentModel extends Model
     public function overview(int $userId): array
     {
         $student = $this->student($userId);
-        $fines = $this->fines((int) $student['id']);
+        $fines = $this->current_semester_fines($this->fines((int) $student['id']), true);
         $total = 0;
         $paid = 0;
         $adjustment = 0;
@@ -223,7 +262,7 @@ class PaymentModel extends Model
                     throw new DomainException('A payment is already pending for this organization. Review or cancel the existing manual claim, or check the Xendit checkout status, before paying again.', 409);
                 }
                 $total = 0;
-                foreach ($this->fines((int) $student['id']) as $candidate) {
+                foreach ($this->current_semester_fines($this->fines((int) $student['id']), true) as $candidate) {
                     if ((int) $candidate['org_user_id'] === $orgId && $this->cents((string) $candidate['pending_amount']) > 0) {
                         throw new DomainException('An existing payment claim is pending for this organization. Wait for its review or cancel it before paying.', 409);
                     }
@@ -420,6 +459,7 @@ class PaymentModel extends Model
             $orgId
         ])->fetchAll(PDO::FETCH_ASSOC);
         $rows = $this->call->model('PaymentPeriodModel')->apply($rows);
+        $rows = $this->current_semester_fines($rows);
         $students = [];
         foreach ($rows as $row) {
             if (!$this->org_scope($org, $row['course'])) {
@@ -456,6 +496,9 @@ class PaymentModel extends Model
             $students[$id]['balance'] += $balance;
             $students[$id]['fines'][] = array_intersect_key($row, array_flip([
                 'fine_key',
+                'academic_period_id',
+                'is_carried_balance',
+                'source_academic_period_label',
                 'violation_name',
                 'event_name',
                 'fine_amount',
@@ -497,7 +540,8 @@ class PaymentModel extends Model
                 $student[$key] = $this->decimal($student[$value]);
                 unset($student[$value]);
             }
-            $student['violation_count'] = count(array_filter($student['fines'], fn ($fine) => $fine['record_type'] === 'VIOLATION'));
+            $student['violation_count'] = count(array_filter($student['fines'],
+                fn ($fine) => $fine['record_type'] === 'VIOLATION' && !$fine['is_carried_balance']));
             $data[] = $student;
         }
         foreach ($totals as & $amount) {

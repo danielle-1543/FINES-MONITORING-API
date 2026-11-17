@@ -5,6 +5,8 @@ class OrganizationDashboardModel extends Model
 {
     public function overview(int $id): array
     {
+        $period = $this->call->model('AcademicPeriodModel')->current();
+        $periodId = (int) ($period['id'] ?? -1);
         $orgs = $this->call->model('OrgEventModel');
         $org = $orgs->organization($id);
         $this->call->model('AttendanceModel')->finalize($id);
@@ -25,11 +27,16 @@ class OrganizationDashboardModel extends Model
             ->get_all();
         $payments = $this->call->model('PaymentModel');
         $ledger = $payments->organization_fines($id, [], true);
-        $claims = $payments->organization_claims($id);
+        $claims = array_values(array_filter($payments->organization_claims($id),
+            static fn ($claim) => (int) ($claim['academic_period_id'] ?? 0) === $periodId));
         $violations = [];
+        $carriedCents = 0;
         foreach ($ledger['data'] as $student) {
             foreach ($student['fines'] as $fine) {
-                if ($fine['record_type'] === 'VIOLATION') {
+                if (!empty($fine['is_carried_balance'])) {
+                    $carriedCents += (int) round((float) $fine['outstanding'] * 100);
+                }
+                if ($fine['record_type'] === 'VIOLATION' && empty($fine['is_carried_balance'])) {
                     $violations[] = $fine + ['full_name' => $student['full_name'], 'student_number' => $student['student_number']];
                 }
             }
@@ -39,6 +46,7 @@ class OrganizationDashboardModel extends Model
         $events = $this->db->table('org_events')
             ->select('id,name,scan_starts_at,scan_ends_at')
             ->where('org_user_id', '=', $id)
+            ->where('academic_period_id', $periodId)
             ->where('event_type', '=', 'ATTENDANCE')
             ->where('scan_ends_at', '>=', $now)
             ->order_by('scan_starts_at', 'ASC')
@@ -54,12 +62,14 @@ class OrganizationDashboardModel extends Model
         unset($event);
         $pending = count(array_filter($claims, fn ($claim) => $claim['status'] === 'PENDING'));
         return [
+            'academic_period' => $period,
             'summary' => [
                 'students' => $students,
                 'present' => (int) $attendance['present'],
                 'absent' => (int) $attendance['absent'],
                 'violations' => count($violations),
                 'open_events' => $open,
+                'carried_balance' => number_format($carriedCents / 100, 2, '.', ''),
                 'pending_claims' => $pending
             ] + $ledger['summary'],
             'recent_attendance' => $recentAttendance,
@@ -83,7 +93,8 @@ class OrganizationDashboardModel extends Model
             ->join('org_events e', 'e.id=r.event_id')
             ->join('students s', 's.id=r.student_id')
             ->where('e.org_user_id', $orgId)
-            ->where('r.record_type', 'ATTENDANCE');
+            ->where('r.record_type', 'ATTENDANCE')
+            ->where('r.academic_period_id', $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1);
         $this->scope_students($query, $courses);
         return $query;
     }

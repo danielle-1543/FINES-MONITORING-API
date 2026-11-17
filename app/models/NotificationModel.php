@@ -220,7 +220,10 @@ class NotificationModel extends Model
         $page = min(max(1, $requestedPage), $pages);
         $items = $query()->select('id,title,message,kind,recorded_at,created_at,read_at')
             ->order_by('id', 'DESC')->limit(20, ($page - 1) * 20)->get_all();
-        return ['data' => $items, 'unread_count' => $this->unread_count($userId), 'filter' => $filter,
+        $totalCount = $this->db->table('student_notifications')
+            ->where('user_id', $userId)
+            ->count();
+        return ['data' => $items, 'total_count' => (int) $totalCount, 'unread_count' => $this->unread_count($userId), 'filter' => $filter,
             'pagination' => ['page' => $page, 'pages' => $pages, 'total' => $total]];
     }
 

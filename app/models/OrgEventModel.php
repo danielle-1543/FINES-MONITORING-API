@@ -140,6 +140,7 @@ class OrgEventModel extends Model
             ->left_join('org_violation_types v', 'v.id=e.violation_type_id AND v.org_user_id=e.org_user_id')
             ->left_join('org_scan_records r', 'r.event_id=e.id')
             ->where('e.org_user_id', $orgId)
+            ->where('e.academic_period_id', $this->call->model('AcademicPeriodModel')->current()['id'] ?? -1)
             ->group_by(explode(', ', $columns))
             ->order_by('e.id', 'DESC')
             ->get_all();
@@ -161,6 +162,10 @@ class OrgEventModel extends Model
         }
         if (!$event) {
             throw new DomainException('Event not found.', 404);
+        }
+        $current = $this->call->model('AcademicPeriodModel')->current();
+        if (!$current || (int) $event['academic_period_id'] !== (int) $current['id']) {
+            throw new DomainException('This event belongs to an archived semester. Refresh the organization page.', 409);
         }
         return $event;
     }
@@ -315,10 +320,8 @@ class OrgEventModel extends Model
         }
         // Apply the same filters to event-linked and standalone violations.
         $conditions = [];
-        if (isset($filters['academic_period_id']) && $filters['academic_period_id'] !== '' && $filters['academic_period_id'] !== 'all') {
-            if (!ctype_digit((string) $filters['academic_period_id'])) throw new DomainException('Invalid academic semester.', 422);
-            $conditions[] = 'COALESCE(academic_period_id,0)=?'; $params[] = (int) $filters['academic_period_id'];
-        }
+        $conditions[] = 'academic_period_id=?';
+        $params[] = (int) ($this->call->model('AcademicPeriodModel')->current()['id'] ?? -1);
         foreach (['student_number', 'section', 'year_level', 'violation_name'] as $field) {
             $value = mb_substr($this->text($filters, $field), 0, 100);
             if ($value === '') {

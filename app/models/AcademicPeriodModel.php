@@ -26,7 +26,10 @@ class AcademicPeriodModel extends Model
     }
     public function recording_period($requested, string $day): int
     {
-        $period = $requested ? $this->period((int) $requested, true) : $this->current();
+        $period = $this->current();
+        if ($requested && (!$period || (int) $requested !== (int) $period['id'])) {
+            throw new DomainException('The current semester changed. Refresh before recording.', 409);
+        }
         if (!$period || $period['status'] !== 'OPEN') throw new DomainException('Ask the administrator to set an open academic semester first.', 409);
         if (($period['starts_on'] && $day < $period['starts_on']) || ($period['ends_on'] && $day > $period['ends_on'])) throw new DomainException('The record date must fall within the selected academic semester.', 422);
         return (int) $period['id'];

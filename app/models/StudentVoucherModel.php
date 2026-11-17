@@ -26,7 +26,9 @@ class StudentVoucherModel extends Model
     {
         $student = $this->student($orgId, $studentId);
         $fines = array_values(array_filter(
-            $this->call->model('PaymentModel')->fines($studentId),
+            $this->call->model('PaymentModel')->current_semester_fines(
+                $this->call->model('PaymentModel')->fines($studentId)
+            ),
             static fn ($fine) => (int) $fine['org_user_id'] === $orgId
         ));
         $summary = [];

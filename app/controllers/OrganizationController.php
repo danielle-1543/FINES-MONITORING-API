@@ -67,7 +67,8 @@ class OrganizationController extends Controller
             'data' => [
                 'events' => $this->OrgEventModel->events($id),
                 'types' => $this->OrgEventModel->violation_types($id),
-                'scope' => $this->OrgEventModel->scope_info($id)
+                'scope' => $this->OrgEventModel->scope_info($id),
+                'academic_period' => $this->call->model('AcademicPeriodModel')->current()
             ]
         ]);
     }
